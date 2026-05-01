@@ -13,6 +13,7 @@ __pycache__/
 
 # logs
 *.log
+*.err
 logs/
 
 # environment files
@@ -41,5 +42,6 @@ Thumbs.db
 
 # data files - only ignore if data is large or private
 data/
+*.db
 
 config/llm_api.yaml
