@@ -1,0 +1,45 @@
+# dependencies
+node_modules/
+venv/
+.venv/
+env/
+.env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# logs
+*.log
+logs/
+
+# environment files
+.env
+.env.local
+.env.*.local
+
+# build outputs
+dist/
+build/
+out/
+.cache/
+
+# IDE / editor
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# temporary files
+*.tmp
+*.temp
+*.bak
+
+# data files - only ignore if data is large or private
+data/
+
+config/llm_api.yaml
