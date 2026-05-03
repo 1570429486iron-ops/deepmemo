@@ -381,6 +381,7 @@ button:disabled {
   color: var(--accent);
   font-weight: 700;
   padding: 0 2px;
+  vertical-align: baseline;
 }
 
 .citation:hover {
@@ -389,6 +390,72 @@ button:disabled {
 
 .citation--active {
   color: #0f4fb2;
+}
+
+.reference-section {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.reference-section h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.reference-list {
+  display: grid;
+  gap: 8px;
+}
+
+.reference-item {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f8fbff;
+}
+
+.reference-item--active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(47, 128, 237, 0.08);
+}
+
+.reference-trigger {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: #172033;
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.reference-trigger:hover {
+  background: #eef6ff;
+}
+
+.reference-path {
+  overflow-wrap: anywhere;
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.reference-chunk {
+  max-height: 280px;
+  overflow: auto;
+  margin: 0;
+  border-top: 1px solid var(--border);
+  background: #fff;
+  color: #1f2937;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .empty-state {

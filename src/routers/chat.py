@@ -2,9 +2,9 @@ import json
 import uuid
 from datetime import datetime
 from fastapi import APIRouter, HTTPException
+from src.ai.service import knowledge_qa_service
 from src.app.database import get_db_connection
 from src.models.schemas import ChatRequest, MessageResponse
-from src.services.llm_service import llm_service
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -52,7 +52,8 @@ def build_llm_messages(session_id: str) -> list[dict]:
     for mid in message_ids:
         row = cursor.execute("SELECT * FROM message WHERE message_id = ?", (mid,)).fetchone()
         if row:
-            messages.append({"role": row["role"], "content": row["content"]})
+            role = "assistant" if row["role"] == "ai" else row["role"]
+            messages.append({"role": role, "content": row["content"]})
     conn.close()
     return messages
 
@@ -61,15 +62,14 @@ def build_llm_messages(session_id: str) -> list[dict]:
 def chat(request: ChatRequest):
     session = get_session_row(request.session_id)
     message_ids = json.loads(session["message_ids"])
+    llm_messages = build_llm_messages(request.session_id)
 
     user_msg_id = str(uuid.uuid4())
     save_message(user_msg_id, request.session_id, "user", request.user_message)
     message_ids.append(user_msg_id)
 
-    llm_messages = build_llm_messages(request.session_id)
-    llm_messages.append({"role": "user", "content": request.user_message})
-    response = llm_service.chat(llm_messages)
-    ai_content = response.choices[0].message.content
+    answer = knowledge_qa_service.answer(request.user_message, history=llm_messages)
+    ai_content = answer.content
 
     ai_msg_id = str(uuid.uuid4())
     save_message(ai_msg_id, request.session_id, "ai", ai_content)

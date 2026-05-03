@@ -28,10 +28,95 @@ import {
 import type { ChatMessage, Session } from './types';
 
 const exampleQuestions = [
-  'DeepMemo 当前支持哪些会话接口？',
-  '请总结这次会话里的关键结论',
-  '后端返回的 markdown 应该如何展示？',
+  'DeepMemo 的产品想法是什么？',
+  '最近的学习记录里有哪些工程经验？',
+  '我关于 LLM-Spine 记录了哪些想法？',
 ];
+
+type SourceChunk = {
+  index: number;
+  path: string;
+  startLine: number;
+  endLine: number;
+  score?: number;
+  query?: string;
+  excerpt: string;
+};
+
+type ParsedMarkdown = {
+  bodyLines: string[];
+  sources: SourceChunk[];
+};
+
+function trimTrailingBlankLines(lines: string[]): string[] {
+  const next = [...lines];
+  while (next.length > 0 && next[next.length - 1].trim() === '') {
+    next.pop();
+  }
+  return next;
+}
+
+function parseMarkdownWithSources(content: string): ParsedMarkdown {
+  const lines = content.split('\n');
+  const referenceIndex = lines.findIndex((line) => line.trim() === '## 引用');
+  if (referenceIndex === -1) {
+    return { bodyLines: lines, sources: [] };
+  }
+
+  const sourceHeaderPattern =
+    /^\[(\d+)\]\s+(.+):(\d+)-(\d+)(?:\s+·\s+score=([0-9.]+))?(?:\s+·\s+query=(.*))?\s*$/;
+  const sources: SourceChunk[] = [];
+  let current: SourceChunk | undefined;
+
+  const pushCurrent = () => {
+    if (current) {
+      sources.push({
+        ...current,
+        excerpt: trimTrailingBlankLines(current.excerpt.split('\n')).join('\n'),
+      });
+    }
+  };
+
+  for (const rawLine of lines.slice(referenceIndex + 1)) {
+    const line = rawLine.trimEnd();
+    const match = sourceHeaderPattern.exec(line);
+    if (match) {
+      pushCurrent();
+      const parsedScore = match[5] ? Number(match[5]) : undefined;
+      current = {
+        index: Number(match[1]),
+        path: match[2],
+        startLine: Number(match[3]),
+        endLine: Number(match[4]),
+        score: parsedScore !== undefined && Number.isFinite(parsedScore) ? parsedScore : undefined,
+        query: match[6],
+        excerpt: '',
+      };
+      continue;
+    }
+
+    if (current && line.startsWith('>')) {
+      const excerptLine = line.replace(/^>\s?/, '');
+      current.excerpt = current.excerpt ? `${current.excerpt}\n${excerptLine}` : excerptLine;
+    }
+  }
+  pushCurrent();
+
+  if (sources.length === 0) {
+    return { bodyLines: lines, sources: [] };
+  }
+
+  return {
+    bodyLines: trimTrailingBlankLines(lines.slice(0, referenceIndex)),
+    sources,
+  };
+}
+
+function scoreLevel(score?: number): 'high' | 'medium' | 'low' {
+  if (score === undefined || score < 0.5) return 'low';
+  if (score < 0.75) return 'medium';
+  return 'high';
+}
 
 function createOptimisticUserMessage(sessionId: string, content: string): ChatMessage {
   return {
@@ -81,7 +166,7 @@ function Sidebar({
         {!collapsed && (
           <div>
             <div className="brand__name">DeepMemo</div>
-            <div className="brand__env">API workspace</div>
+            <div className="brand__env">Knowledge QA</div>
           </div>
         )}
       </div>
@@ -170,7 +255,7 @@ function TopBar({
         <BookOpen size={20} />
         <div>
           <div className="topbar__name">{activeSession?.sessionName ?? '未选择会话'}</div>
-          <div className="topbar__sub">通过 /sessions 与 /chat 接口同步</div>
+          <div className="topbar__sub">通过 /chat 调用本地知识库 RAG</div>
         </div>
         <span className={`pill pill--${apiStatus === 'online' ? 'ready' : 'indexing'}`}>{statusText}</span>
       </div>
@@ -197,28 +282,91 @@ function TopBar({
 }
 
 function MarkdownLite({ content }: { content: string }) {
-  const lines = content.split('\n');
+  const { bodyLines, sources } = useMemo(() => parseMarkdownWithSources(content), [content]);
+  const [activeSourceIndex, setActiveSourceIndex] = useState<number>();
+  const sourceIndexes = useMemo(() => new Set(sources.map((source) => source.index)), [sources]);
+
+  useEffect(() => {
+    setActiveSourceIndex(undefined);
+  }, [content]);
+
+  const renderInlineText = (line: string, lineIndex: number) => {
+    const parts = line.split(/(\[\d+\])/g);
+    return parts.map((part, partIndex) => {
+      const match = /^\[(\d+)\]$/.exec(part);
+      const sourceIndex = match ? Number(match[1]) : undefined;
+      if (sourceIndex && sourceIndexes.has(sourceIndex)) {
+        return (
+          <button
+            className={`citation ${activeSourceIndex === sourceIndex ? 'citation--active' : ''}`}
+            type="button"
+            key={`${lineIndex}-${partIndex}-${part}`}
+            onClick={() => setActiveSourceIndex(sourceIndex)}
+          >
+            {part}
+          </button>
+        );
+      }
+
+      return <span key={`${lineIndex}-${partIndex}-${part}`}>{part}</span>;
+    });
+  };
 
   return (
     <div className="markdown-lite">
-      {lines.map((line, index) => {
+      {bodyLines.map((line, index) => {
         if (line.startsWith('### ')) {
-          return <h3 key={`${line}-${index}`}>{line.slice(4)}</h3>;
+          return <h3 key={`${line}-${index}`}>{renderInlineText(line.slice(4), index)}</h3>;
         }
         if (line.startsWith('## ')) {
-          return <h2 key={`${line}-${index}`}>{line.slice(3)}</h2>;
+          return <h2 key={`${line}-${index}`}>{renderInlineText(line.slice(3), index)}</h2>;
         }
         if (line.startsWith('# ')) {
-          return <h1 key={`${line}-${index}`}>{line.slice(2)}</h1>;
+          return <h1 key={`${line}-${index}`}>{renderInlineText(line.slice(2), index)}</h1>;
         }
         if (line.startsWith('- ')) {
-          return <p key={`${line}-${index}`} className="markdown-lite__list">• {line.slice(2)}</p>;
+          return (
+            <p key={`${line}-${index}`} className="markdown-lite__list">
+              • {renderInlineText(line.slice(2), index)}
+            </p>
+          );
         }
         if (line.trim() === '') {
           return <div className="markdown-lite__gap" key={`gap-${index}`} />;
         }
-        return <p key={`${line}-${index}`}>{line}</p>;
+        return <p key={`${line}-${index}`}>{renderInlineText(line, index)}</p>;
       })}
+      {sources.length > 0 && (
+        <section className="reference-section" aria-label="引用">
+          <h2>引用</h2>
+          <div className="reference-list">
+            {sources.map((source) => {
+              const isActive = activeSourceIndex === source.index;
+              const chunkText = `${source.query ? `query: ${source.query}\n\n` : ''}${source.excerpt}`;
+              return (
+                <article className={`reference-item ${isActive ? 'reference-item--active' : ''}`} key={`${source.index}-${source.path}`}>
+                  <button
+                    className="reference-trigger"
+                    type="button"
+                    onClick={() => setActiveSourceIndex(isActive ? undefined : source.index)}
+                  >
+                    <span className="source-index">[{source.index}]</span>
+                    <span className="reference-path">
+                      {source.path}:{source.startLine}-{source.endLine}
+                    </span>
+                    {source.score !== undefined && (
+                      <span className={`score score--${scoreLevel(source.score)}`}>
+                        {Math.round(source.score * 100)}%
+                      </span>
+                    )}
+                  </button>
+                  {isActive && <pre className="reference-chunk">{chunkText}</pre>}
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
     </div>
   );
 }
@@ -253,7 +401,7 @@ function MessageList({
           <Sparkles size={28} />
         </div>
         <h1>询问你的知识库</h1>
-        <p>消息会保存到后端会话，刷新后可继续查看。</p>
+        <p>DeepMemo 会先检索 data/ 下的 Markdown 证据，再生成回答。</p>
         <div className="example-grid">
           {exampleQuestions.map((question) => (
             <button type="button" key={question} onClick={() => onAskExample(question)}>
@@ -319,13 +467,13 @@ function Composer({
           <Search size={14} />
           {activeSession?.sessionName ?? '未选择会话'}
         </span>
-        <span>后端聊天接口</span>
+        <span>本地知识库优先</span>
       </div>
       <div className="composer__box">
         <textarea
           value={value}
           onChange={(event) => onChange(event.target.value)}
-          placeholder="输入问题，DeepMemo 会调用后端 /chat 接口回答"
+          placeholder="输入问题，DeepMemo 会检索本地 Markdown 知识库后回答"
           rows={3}
           disabled={disabled}
         />
@@ -357,7 +505,7 @@ function DetailsPanel({
       <div className="sources-panel__header">
         <div>
           <div className="sources-panel__title">会话详情</div>
-          <div className="sources-panel__sub">来自后端接口</div>
+          <div className="sources-panel__sub">按 design.md API 对接</div>
         </div>
       </div>
 
@@ -374,6 +522,11 @@ function DetailsPanel({
             <div className="source-card__title">消息统计</div>
             <div className="source-card__file">GET /chat/{'{session_id}'}/messages</div>
             <p>当前加载 {messages.length} 条消息，后端记录 {activeSession.messageIds.length} 条消息。</p>
+          </section>
+          <section className="source-card source-card--static">
+            <div className="source-card__title">AI 管线</div>
+            <div className="source-card__file">POST /chat</div>
+            <p>聊天接口保持 MessageResponse 结构不变，内部已接入 QueryRouter、LocalSearchAgent 和 AnswerComposer。</p>
           </section>
           <section className="source-card source-card--static">
             <div className="source-card__title">接口状态</div>

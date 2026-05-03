@@ -2,14 +2,25 @@ import json
 import uuid
 from datetime import datetime
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
 
+from src.ai.service import knowledge_qa_service
 from src.app.database import init_db, get_db_connection
-from src.services.llm_service import llm_service
 
 
 app = FastAPI(title="DeepMemo API", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # --- Pydantic Models ---
@@ -84,7 +95,8 @@ def build_llm_messages(session_id: str) -> list[dict]:
     for mid in message_ids:
         row = cursor.execute("SELECT * FROM message WHERE message_id = ?", (mid,)).fetchone()
         if row:
-            messages.append({"role": row["role"], "content": row["content"]})
+            role = "assistant" if row["role"] == "ai" else row["role"]
+            messages.append({"role": role, "content": row["content"]})
     conn.close()
     return messages
 
@@ -163,15 +175,14 @@ def delete_session(session_id: str):
 def chat(request: ChatRequest):
     session = get_session_row(request.session_id)
     message_ids = json.loads(session["message_ids"])
+    llm_messages = build_llm_messages(request.session_id)
 
     user_msg_id = str(uuid.uuid4())
     save_message(user_msg_id, request.session_id, "user", request.user_message)
     message_ids.append(user_msg_id)
 
-    llm_messages = build_llm_messages(request.session_id)
-    llm_messages.append({"role": "user", "content": request.user_message})
-    response = llm_service.chat(llm_messages)
-    ai_content = response.choices[0].message.content
+    answer = knowledge_qa_service.answer(request.user_message, history=llm_messages)
+    ai_content = answer.content
 
     ai_msg_id = str(uuid.uuid4())
     save_message(ai_msg_id, request.session_id, "ai", ai_content)

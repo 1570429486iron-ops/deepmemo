@@ -45,3 +45,6 @@ data/
 *.db
 
 config/llm_api.yaml
+.claude/
+agents.md
+claude.md

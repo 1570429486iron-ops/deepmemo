@@ -118,3 +118,86 @@ QueryRouter
 
 - 只在本地知识库召回失败或问题明确需要外部信息时触发。
 - 输出答案时标注哪些来自本地知识库，哪些来自外部搜索。
+
+## 实现进度
+
+### 2026-05-03
+
+状态：本轮已把 AI 模块接入后端聊天链路。第一阶段完成；第二阶段完成基础路由；第三阶段完成 fallback 接口和管线集成，但默认不启用联网 provider。
+
+已完成：
+
+- `src/ai/local_tools.py`：实现 `glob_files`、`grep_content`、`read_lines`、`count_matches` 的安全封装。所有路径都限制在 `data/` 下，默认只读 Markdown，并通过 `realpath` 防止 `../` 路径穿越。底层搜索只调用白名单 `rg`，不暴露任意 shell。
+- `src/ai/local_search_agent.py`：实现第一阶段 LocalSearchAgent。根据问题和路由 hints 生成搜索词，执行多轮 grep，按命中位置读取上下文，输出结构化 evidence、来源文件、行号和相关性分数。
+- `src/ai/query_router.py`：实现基础 QueryRouter。能识别想法类问题优先搜 `data/ideas`，时间/学习记录类问题优先搜 `data/2026`，记忆类问题优先搜 `data/memory`，并识别可能需要外部信息的问题。
+- `src/ai/answer_composer.py`：实现 AnswerComposer。把本地证据合并进 prompt，要求回答标注来源；LLM 调用失败时返回本地证据摘要，不让接口直接崩掉。
+- `src/ai/web_search_agent.py`：实现 WebSearchAgent 的 provider 注入接口。MVP 默认禁用；接入 provider 后可返回外部 snippets，并由 AnswerComposer 明确区分本地证据和外部补充。
+- `src/ai/service.py`：实现 KnowledgeQAService，总管线为 `QueryRouter -> LocalSearchAgent -> WebSearchAgent fallback -> AnswerComposer`。
+- `src/app/main.py`、`src/routers/chat.py`：把 `/chat` 从直接调用 LLM 改为调用 KnowledgeQAService；同时修正历史消息中数据库角色 `ai` 传给 OpenAI 前需要映射为 `assistant` 的问题，并避免把当前用户消息重复追加进 LLM 历史。
+
+验证记录：
+
+- `python3 -m compileall src/ai src/app src/routers`
+- `python3 -c "from src.ai.local_tools import KnowledgeBaseTools; tools=KnowledgeBaseTools(); print(len(tools.glob_files('ideas').files)); print(tools.grep_content('DeepMemo', path='ideas', context=1).hits[0].path)"`
+- `python3 -c "from src.ai.query_router import QueryRouter; from src.ai.local_search_agent import LocalSearchAgent; q='DeepMemo 的想法是什么'; route=QueryRouter().route(q); result=LocalSearchAgent().search(q, route); print(route.path_hints); print(result.searched_queries); print(len(result.evidence)); print(result.evidence[0].source_id if result.evidence else 'NO')"`
+- `python3 -c "from src.ai.local_tools import KnowledgeBaseTools; tools=KnowledgeBaseTools(); print(tools.grep_content('-not-a-flag', mode='content').message or 'ok')"`
+- `python3 -c "from src.ai.local_tools import KnowledgeBaseTools; tools=KnowledgeBaseTools(); ... tools.glob_files('../*.md') ..."` 验证 glob 路径穿越会被拒绝。
+- `python3 -c "from src.app.main import app; print(app.title)"`
+
+后续可增强：
+
+- QueryRouter 可以继续加入更精确的日期解析，把“上周”“四月”等映射到具体文件范围。
+- WebSearchAgent 需要真实外部搜索 provider 后才启用；当前实现只提供可注入接口和回答侧区分逻辑。
+
+### 2026-05-03 系统集成补充
+
+集成原则：遵守 `docx/design.md` 的前后端对接约定，不新增必填字段、不改变 `SessionResponse` 和 `MessageResponse` 结构。AI 能力只作为 `/chat` 的内部实现升级，对前端仍表现为发送用户消息并返回一条 `role="ai"` 的 Markdown 内容。
+
+已完成：
+
+- 后端 `POST /chat` 保持原请求和响应格式不变，内部改为调用 `KnowledgeQAService.answer()`。
+- 前端 `app/src/api.ts` 继续使用现有 `/sessions`、`/chat`、`/chat/{session_id}/messages` 调用，无需改动数据模型。
+- 前端 `app/src/App.tsx` 的页面文案、示例问题、详情面板说明已从普通聊天接口调整为本地知识库问答语义，提示用户 DeepMemo 会优先检索 `data/` 下的 Markdown 证据。
+- 后端 `src/app/main.py` 增加 CORS 配置，允许 Vite 开发服务 `http://localhost:5173` 和 `http://127.0.0.1:5173` 直连后端；同时仍兼容 Vite proxy 的 `/api -> http://localhost:8000` 方式。
+
+对接状态：
+
+- `GET /`：前端健康检查继续使用。
+- `GET /sessions`、`POST /sessions`、`DELETE /sessions/{session_id}`：会话列表、新建和删除逻辑继续使用。
+- `GET /chat/{session_id}/messages`：消息历史继续按时间正序加载。
+- `POST /chat`：前端无需知道 RAG 细节；后端负责路由、检索、证据注入和回答生成。
+
+新增验证：
+
+- `npm run build` 在 `app/` 下验证前端 TypeScript 和 Vite 构建。
+- `python3 -m compileall src/ai src/app src/routers` 验证后端 AI 管线和 API 入口可编译。
+
+### 2026-05-03 可溯源引用增强
+
+问题：当前 case 里的回答只出现 `[证据 1:51]` 这类模型生成文本，用户无法点击定位，也无法确认这个标记对应哪个真实 chunk。可溯源链路不应该依赖 LLM 自己拼来源。
+
+方案：
+
+- 后端仍保持 `MessageResponse` 结构不变，不新增必填字段。
+- `AnswerComposer` 只要求 LLM 在正文里使用 `[1]`、`[2]` 这种数字引用。
+- LLM 生成完成后，系统基于 `LocalSearchResult.evidence` 自动追加固定格式的 `## 引用` 区块，包含 `path:start-end`、score、query 和原始 chunk。
+- 历史消息传回 LLM 前会剥离旧回答里的 `## 引用` 区块，避免 chunk 在多轮对话里反复膨胀。
+- 前端 `MarkdownLite` 解析 `## 引用` 区块，把正文中的 `[1]`、`[2]` 渲染成可点击引用，并在回答末尾把对应 source chunk 折叠展示。
+- `LocalSearchAgent` 使用实际读取到的首尾行号作为 citation range，避免文件较短时引用到不存在的结束行。
+
+引用区块格式：
+
+```md
+## 引用
+
+[1] ideas/Memory.md:51-53 · score=0.90 · query=Claude Code
+> 51: ...
+> 52: ...
+> 53: ...
+```
+
+验证记录：
+
+- `python3 -m compileall src/ai src/app src/routers`
+- `python3 -c ... AnswerComposer(LLM()).compose(...)` 验证回答会自动追加 `## 引用` 和 chunk。
+- `npm run build` 在 `app/` 下验证前端解析和渲染代码可构建。
