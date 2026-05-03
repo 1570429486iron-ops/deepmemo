@@ -147,17 +147,21 @@ function Sidebar({
   activeSessionId,
   onSelectSession,
   onCreateSession,
+  onDeleteSession,
   collapsed,
   onToggle,
   creating,
+  deleting,
 }: {
   sessions: Session[];
   activeSessionId?: string;
   onSelectSession: (id: string) => void;
   onCreateSession: () => void;
+  onDeleteSession: (id: string) => void;
   collapsed: boolean;
   onToggle: () => void;
   creating: boolean;
+  deleting: boolean;
 }) {
   return (
     <aside className={`sidebar ${collapsed ? 'sidebar--collapsed' : ''}`}>
@@ -183,26 +187,36 @@ function Sidebar({
           </button>
         </div>
         {sessions.map((session) => (
-          <button
-            className={`kb-item ${session.sessionId === activeSessionId ? 'kb-item--active' : ''}`}
-            type="button"
-            key={session.sessionId}
-            onClick={() => onSelectSession(session.sessionId)}
-            title={session.sessionName}
-          >
-            <MessageSquare size={18} />
-            {!collapsed && (
-              <span className="kb-item__body">
-                <span className="kb-item__top">
-                  <span>{session.sessionName}</span>
-                  <span className="status-dot status-dot--ready" />
+          <div className={`kb-item ${session.sessionId === activeSessionId ? 'kb-item--active' : ''}`} key={session.sessionId}>
+            <button
+              className="kb-item__button"
+              type="button"
+              onClick={() => onSelectSession(session.sessionId)}
+              title={session.sessionName}
+            >
+              <MessageSquare size={18} />
+              {!collapsed && (
+                <span className="kb-item__body">
+                  <span className="kb-item__top">
+                    <span>{session.sessionName}</span>
+                    <span className="status-dot status-dot--ready" />
+                  </span>
+                  <span className="kb-item__meta">
+                    {session.messageIds.length} 条消息 · {session.updatedAt}
+                  </span>
                 </span>
-                <span className="kb-item__meta">
-                  {session.messageIds.length} 条消息 · {session.updatedAt}
-                </span>
-              </span>
-            )}
-          </button>
+              )}
+            </button>
+            <button
+              className="kb-item__delete"
+              type="button"
+              onClick={() => onDeleteSession(session.sessionId)}
+              title="删除会话"
+              disabled={deleting}
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
         ))}
       </nav>
 
@@ -225,56 +239,22 @@ function Sidebar({
 }
 
 function TopBar({
-  activeSession,
-  apiStatus,
   onRefresh,
-  onDeleteSession,
-  detailsOpen,
-  onToggleDetails,
   refreshing,
-  deleting,
 }: {
-  activeSession?: Session;
-  apiStatus: 'checking' | 'online' | 'offline';
   onRefresh: () => void;
-  onDeleteSession: () => void;
-  detailsOpen: boolean;
-  onToggleDetails: () => void;
   refreshing: boolean;
-  deleting: boolean;
 }) {
-  const statusText = {
-    checking: '检查中',
-    online: '后端已连接',
-    offline: '连接异常',
-  }[apiStatus];
-
   return (
     <header className="topbar">
       <div className="topbar__title">
         <BookOpen size={20} />
-        <div>
-          <div className="topbar__name">{activeSession?.sessionName ?? '未选择会话'}</div>
-          <div className="topbar__sub">通过 /chat 调用本地知识库 RAG</div>
-        </div>
-        <span className={`pill pill--${apiStatus === 'online' ? 'ready' : 'indexing'}`}>{statusText}</span>
+        <span>DeepMemo</span>
       </div>
 
       <div className="topbar__actions">
         <button className="icon-button" type="button" onClick={onRefresh} title="刷新会话" disabled={refreshing}>
           <RefreshCw size={18} className={refreshing ? 'spin' : ''} />
-        </button>
-        <button
-          className="icon-button"
-          type="button"
-          onClick={onDeleteSession}
-          title="删除当前会话"
-          disabled={!activeSession || deleting}
-        >
-          <Trash2 size={18} />
-        </button>
-        <button className="icon-button" type="button" onClick={onToggleDetails} title="切换详情面板">
-          {detailsOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
         </button>
       </div>
     </header>
@@ -283,12 +263,24 @@ function TopBar({
 
 function MarkdownLite({ content }: { content: string }) {
   const { bodyLines, sources } = useMemo(() => parseMarkdownWithSources(content), [content]);
-  const [activeSourceIndex, setActiveSourceIndex] = useState<number>();
+  const [activeSourceIndexes, setActiveSourceIndexes] = useState<Set<number>>(new Set());
   const sourceIndexes = useMemo(() => new Set(sources.map((source) => source.index)), [sources]);
 
   useEffect(() => {
-    setActiveSourceIndex(undefined);
+    setActiveSourceIndexes(new Set());
   }, [content]);
+
+  const toggleSource = (index: number) => {
+    setActiveSourceIndexes((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) {
+        next.delete(index);
+      } else {
+        next.add(index);
+      }
+      return next;
+    });
+  };
 
   const renderInlineText = (line: string, lineIndex: number) => {
     const parts = line.split(/(\[\d+\])/g);
@@ -298,10 +290,10 @@ function MarkdownLite({ content }: { content: string }) {
       if (sourceIndex && sourceIndexes.has(sourceIndex)) {
         return (
           <button
-            className={`citation ${activeSourceIndex === sourceIndex ? 'citation--active' : ''}`}
+            className={`citation ${activeSourceIndexes.has(sourceIndex) ? 'citation--active' : ''}`}
             type="button"
             key={`${lineIndex}-${partIndex}-${part}`}
-            onClick={() => setActiveSourceIndex(sourceIndex)}
+            onClick={() => toggleSource(sourceIndex)}
           >
             {part}
           </button>
@@ -341,14 +333,14 @@ function MarkdownLite({ content }: { content: string }) {
           <h2>引用</h2>
           <div className="reference-list">
             {sources.map((source) => {
-              const isActive = activeSourceIndex === source.index;
+              const isActive = activeSourceIndexes.has(source.index);
               const chunkText = `${source.query ? `query: ${source.query}\n\n` : ''}${source.excerpt}`;
               return (
                 <article className={`reference-item ${isActive ? 'reference-item--active' : ''}`} key={`${source.index}-${source.path}`}>
                   <button
                     className="reference-trigger"
                     type="button"
-                    onClick={() => setActiveSourceIndex(isActive ? undefined : source.index)}
+                    onClick={() => toggleSource(source.index)}
                   >
                     <span className="source-index">[{source.index}]</span>
                     <span className="reference-path">
@@ -491,53 +483,6 @@ function Composer({
   );
 }
 
-function DetailsPanel({
-  activeSession,
-  messages,
-  apiStatus,
-}: {
-  activeSession?: Session;
-  messages: ChatMessage[];
-  apiStatus: 'checking' | 'online' | 'offline';
-}) {
-  return (
-    <aside className="sources-panel">
-      <div className="sources-panel__header">
-        <div>
-          <div className="sources-panel__title">会话详情</div>
-          <div className="sources-panel__sub">按 design.md API 对接</div>
-        </div>
-      </div>
-
-      {!activeSession ? (
-        <div className="sources-empty">等待会话加载</div>
-      ) : (
-        <div className="source-list">
-          <section className="source-card source-card--static">
-            <div className="source-card__title">{activeSession.sessionName}</div>
-            <div className="source-card__file">Session ID</div>
-            <p>{activeSession.sessionId}</p>
-          </section>
-          <section className="source-card source-card--static">
-            <div className="source-card__title">消息统计</div>
-            <div className="source-card__file">GET /chat/{'{session_id}'}/messages</div>
-            <p>当前加载 {messages.length} 条消息，后端记录 {activeSession.messageIds.length} 条消息。</p>
-          </section>
-          <section className="source-card source-card--static">
-            <div className="source-card__title">AI 管线</div>
-            <div className="source-card__file">POST /chat</div>
-            <p>聊天接口保持 MessageResponse 结构不变，内部已接入 QueryRouter、LocalSearchAgent 和 AnswerComposer。</p>
-          </section>
-          <section className="source-card source-card--static">
-            <div className="source-card__title">接口状态</div>
-            <div className="source-card__file">GET /</div>
-            <p>{apiStatus === 'online' ? '后端服务正常响应。' : '后端暂未正常响应，请确认服务已启动在 8000 端口。'}</p>
-          </section>
-        </div>
-      )}
-    </aside>
-  );
-}
 
 export function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -550,8 +495,7 @@ export function App() {
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [detailsOpen, setDetailsOpen] = useState(true);
-  const [apiStatus, setApiStatus] = useState<'checking' | 'online' | 'offline'>('checking');
+    const [apiStatus, setApiStatus] = useState<'checking' | 'online' | 'offline'>('checking');
   const [error, setError] = useState<string>();
 
   const activeSession = useMemo(
@@ -658,17 +602,18 @@ export function App() {
     }
   };
 
-  const handleDeleteSession = async () => {
-    if (!activeSessionId) return;
+  const handleDeleteSession = async (sessionId: string) => {
     setDeleting(true);
     setError(undefined);
     try {
-      await deleteSession(activeSessionId);
-      const remaining = sessions.filter((session) => session.sessionId !== activeSessionId);
+      await deleteSession(sessionId);
+      const remaining = sessions.filter((session) => session.sessionId !== sessionId);
       if (remaining.length > 0) {
         setSessions(remaining);
-        setActiveSessionId(remaining[0].sessionId);
-        await loadMessagesForSession(remaining[0].sessionId);
+        if (activeSessionId === sessionId) {
+          setActiveSessionId(remaining[0].sessionId);
+          await loadMessagesForSession(remaining[0].sessionId);
+        }
       } else {
         const created = await createSession(createSessionName());
         setSessions([created]);
@@ -719,21 +664,17 @@ export function App() {
         activeSessionId={activeSessionId}
         onSelectSession={setActiveSessionId}
         onCreateSession={handleCreateSession}
+        onDeleteSession={handleDeleteSession}
         collapsed={sidebarCollapsed}
         onToggle={() => setSidebarCollapsed((value) => !value)}
         creating={creating}
+        deleting={deleting}
       />
 
       <main className="workspace">
         <TopBar
-          activeSession={activeSession}
-          apiStatus={apiStatus}
           onRefresh={handleRefresh}
-          onDeleteSession={handleDeleteSession}
-          detailsOpen={detailsOpen}
-          onToggleDetails={() => setDetailsOpen((value) => !value)}
           refreshing={refreshing}
-          deleting={deleting}
         />
         {error && (
           <div className="error-banner">
@@ -753,8 +694,6 @@ export function App() {
           />
         </section>
       </main>
-
-      {detailsOpen && <DetailsPanel activeSession={activeSession} messages={messages} apiStatus={apiStatus} />}
     </div>
   );
 }

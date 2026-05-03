@@ -201,3 +201,20 @@ QueryRouter
 - `python3 -m compileall src/ai src/app src/routers`
 - `python3 -c ... AnswerComposer(LLM()).compose(...)` 验证回答会自动追加 `## 引用` 和 chunk。
 - `npm run build` 在 `app/` 下验证前端解析和渲染代码可构建。
+
+### 2026-05-03 检索优先级调整
+
+判断：`data/2026` 的每日记录是最原始、最真实、最有用的信息源，不能只在“最近”“学习记录”这类问题中才优先触发。
+
+调整：
+
+- `QueryRouter` 默认把 `data/2026` 作为第一检索范围。
+- 命中想法类问题时，检索顺序为 `data/2026 -> data/ideas`。
+- 命中记忆类问题时，检索顺序为 `data/2026 -> data/memory`。
+- 未命中特定目录时，检索顺序为 `data/2026 -> data/ideas -> data/memory`，避免泛问题绕过每日记录。
+
+验证记录：
+
+- `python3 -m compileall src/ai src/app src/routers`
+- `python3 -c ... QueryRouter().route(...)` 验证泛问题路径为 `['2026', 'ideas', 'memory']`，想法类为 `['2026', 'ideas']`，记忆类为 `['2026', 'memory']`。
+- `python3 -c ... LocalSearchAgent().search(...)` 验证 case 问题第一条证据来自 `2026/48.md:5-21`。

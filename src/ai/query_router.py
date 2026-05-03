@@ -44,28 +44,33 @@ class QueryRouter:
     def route(self, question: str) -> RouteDecision:
         normalized = question.strip()
         lower = normalized.lower()
-        path_hints: list[str] = []
-        reasons: list[str] = []
+        path_hints: list[str] = ["diary"]
+        reasons: list[str] = ["默认把 data/diary 作为第一检索范围，因为日常记录是最高优先级本地证据。"]
+        matched_scoped_directory = False
 
         if self._contains_any(lower, self.idea_terms):
             path_hints.append("ideas")
-            reasons.append("命中想法类问题，优先搜索 data/ideas。")
+            matched_scoped_directory = True
+            reasons.append("命中想法类问题，在 data/diary 后补充搜索 data/ideas。")
 
         if self._contains_any(lower, self.diary_terms):
-            path_hints.append("2026")
-            reasons.append("命中时间或学习记录问题，优先搜索 data/2026。")
+            matched_scoped_directory = True
+            reasons.append("命中时间或学习记录问题，强化搜索 data/diary。")
 
         if self._contains_any(lower, self.memory_terms):
             path_hints.append("memory")
-            reasons.append("命中记忆类问题，优先搜索 data/memory。")
+            matched_scoped_directory = True
+            reasons.append("命中记忆类问题，在 data/diary 后补充搜索 data/memory。")
+
+        if not matched_scoped_directory:
+            path_hints.extend(["ideas", "memory"])
+            reasons.append("未命中特定目录时，在 data/diary 后补充搜索 data/ideas 和 data/memory。")
 
         needs_web = self._contains_any(lower, self.realtime_terms)
         if needs_web:
             reasons.append("问题可能依赖实时或外部信息，允许在本地证据不足时 fallback。")
 
         query_hints = self.extract_query_hints(normalized)
-        if not reasons:
-            reasons.append("默认先走本地知识库召回。")
 
         return RouteDecision(
             use_local_search=True,
