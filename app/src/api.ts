@@ -1,9 +1,29 @@
-import type { ApiMessageResponse, ApiSessionResponse, ChatMessage, Session } from './types';
+import type {
+  ApiFileContentResponse,
+  ApiFileMoveResponse,
+  ApiFileWriteResponse,
+  ApiFsNode,
+  ApiMessageResponse,
+  ApiSessionResponse,
+  ApiSyncStatusResponse,
+  AutoDraftResponse,
+  ChatMessage,
+  FsNode,
+  Session,
+  SyncStatus,
+} from './types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api';
 
+function buildRequestUrl(path: string): string {
+  if (API_BASE_URL === '/api' && path.startsWith('/api/')) {
+    return path;
+  }
+  return `${API_BASE_URL}${path}`;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetch(buildRequestUrl(path), {
     headers: {
       'Content-Type': 'application/json',
       ...options?.headers,
@@ -54,6 +74,17 @@ export function mapMessage(message: ApiMessageResponse): ChatMessage {
   };
 }
 
+function mapFsNode(node: ApiFsNode): FsNode {
+  return {
+    id: node.path,
+    name: node.name,
+    path: node.path,
+    type: node.type,
+    syncStatus: node.sync_status,
+    children: node.children?.map(mapFsNode),
+  };
+}
+
 export async function getHealth(): Promise<{ message: string }> {
   return request<{ message: string }>('/');
 }
@@ -91,4 +122,46 @@ export async function sendMessage(sessionId: string, userMessage: string): Promi
     }),
   });
   return mapMessage(message);
+}
+
+export async function getFileTree(): Promise<FsNode[]> {
+  const nodes = await request<ApiFsNode[]>('/api/fs/tree');
+  return nodes.map(mapFsNode);
+}
+
+export async function getFileContent(path: string): Promise<ApiFileContentResponse> {
+  return request<ApiFileContentResponse>(`/api/fs/content?path=${encodeURIComponent(path)}`);
+}
+
+export async function writeFile(path: string, content: string): Promise<ApiFileWriteResponse> {
+  return request<ApiFileWriteResponse>('/api/fs/write', {
+    method: 'POST',
+    body: JSON.stringify({ path, content }),
+  });
+}
+
+export async function moveFile(oldPath: string, newPath: string): Promise<ApiFileMoveResponse> {
+  return request<ApiFileMoveResponse>('/api/fs/move', {
+    method: 'POST',
+    body: JSON.stringify({ old_path: oldPath, new_path: newPath }),
+  });
+}
+
+export async function updateFileSyncStatus(path: string, syncStatus: SyncStatus): Promise<ApiSyncStatusResponse> {
+  return request<ApiSyncStatusResponse>('/api/fs/sync-status', {
+    method: 'PATCH',
+    body: JSON.stringify({ path, sync_status: syncStatus }),
+  });
+}
+
+export async function createDiaryAutoDraft(rawDir = 'raw', outputDir = 'diary'): Promise<AutoDraftResponse> {
+  const response = await request<{ source_file?: string; draft: string; message: string }>('/api/diary/auto-draft', {
+    method: 'POST',
+    body: JSON.stringify({ raw_dir: rawDir, output_dir: outputDir }),
+  });
+  return {
+    sourceFile: response.source_file,
+    draft: response.draft,
+    message: response.message,
+  };
 }
