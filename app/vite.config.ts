@@ -7,6 +7,14 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 5173,
     proxy: {
+      '/api/fs': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      '/api/diary': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
