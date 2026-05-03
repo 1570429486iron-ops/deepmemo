@@ -7,9 +7,12 @@ from pydantic import BaseModel
 
 from src.ai.service import knowledge_qa_service
 from src.app.database import init_db, get_db_connection
+from src.app.core.watcher import start_watcher, stop_watcher
+from src.routers.fs import router as fs_router
+from src.routers.diary import router as diary_router
 
 
-app = FastAPI(title="DeepMemo API", version="0.1.0")
+app = FastAPI(title="DeepMemo API", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -101,10 +104,20 @@ def build_llm_messages(session_id: str) -> list[dict]:
     return messages
 
 
-# --- Startup ---
+# --- Startup / Shutdown ---
 @app.on_event("startup")
 def startup():
     init_db()
+    start_watcher()
+
+@app.on_event("shutdown")
+def shutdown():
+    stop_watcher()
+
+
+# --- FS Routers ---
+app.include_router(fs_router)
+app.include_router(diary_router)
 
 
 # --- Session APIs ---

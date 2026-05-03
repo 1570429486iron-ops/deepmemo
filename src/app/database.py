@@ -1,5 +1,6 @@
 import sqlite3
 from pathlib import Path
+from datetime import datetime
 
 DATABASE_PATH = Path(__file__).parent.parent.parent / "data.db"
 
@@ -28,6 +29,19 @@ def init_db():
             content TEXT NOT NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (session_id) REFERENCES session(session_id)
+        )
+    """)
+    # file_meta: 记录物理文件在知识库中的状态
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS file_meta (
+            id TEXT PRIMARY KEY,
+            file_path TEXT UNIQUE,
+            file_hash TEXT,
+            sync_status TEXT NOT NULL CHECK (
+                sync_status IN ('synced', 'dirty', 'draft', 'processing', 'error')
+            ),
+            last_modified DATETIME,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
     conn.commit()
