@@ -14,6 +14,13 @@ export type ChatMessage = {
   createdAt: string;
 };
 
+export type Citation = {
+  localId: number;
+  evidenceId: string;
+  filePath: string;
+  content: string;
+};
+
 export type SyncStatus = 'synced' | 'dirty' | 'draft' | 'processing' | 'error';
 
 export type FsNode = {
@@ -39,6 +46,18 @@ export type ApiMessageResponse = {
   role: 'user' | 'ai';
   content: string;
   created_at: string;
+};
+
+export type ApiCitationResponse = {
+  local_id: number;
+  evidence_id: string;
+  file_path: string;
+  content: string;
+};
+
+export type ApiCitationsResponse = {
+  message_id: string;
+  citations: ApiCitationResponse[];
 };
 
 export type ApiSyncStatus = SyncStatus;
@@ -82,4 +101,22 @@ export type AutoDraftResponse = {
   sourceFile?: string;
   draft: string;
   message: string;
+};
+
+export type FileReference = {
+  sessionId: string;
+  sessionName: string;
+  messageId: string;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: string;
+};
+
+export type ApiFileReference = {
+  session_id: string;
+  session_name: string;
+  message_id: string;
+  role: 'user' | 'ai';
+  content: string;
+  created_at: string;
 };

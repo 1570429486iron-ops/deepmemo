@@ -1,13 +1,17 @@
 import type {
   ApiFileContentResponse,
+  ApiFileReference,
   ApiFileMoveResponse,
   ApiFileWriteResponse,
+  ApiCitationsResponse,
   ApiFsNode,
   ApiMessageResponse,
   ApiSessionResponse,
   ApiSyncStatusResponse,
   AutoDraftResponse,
+  FileReference,
   ChatMessage,
+  Citation,
   FsNode,
   Session,
   SyncStatus,
@@ -74,6 +78,15 @@ export function mapMessage(message: ApiMessageResponse): ChatMessage {
   };
 }
 
+function mapCitation(citation: ApiCitationsResponse['citations'][number]): Citation {
+  return {
+    localId: citation.local_id,
+    evidenceId: citation.evidence_id,
+    filePath: citation.file_path,
+    content: citation.content,
+  };
+}
+
 function mapFsNode(node: ApiFsNode): FsNode {
   return {
     id: node.path,
@@ -124,6 +137,11 @@ export async function sendMessage(sessionId: string, userMessage: string): Promi
   return mapMessage(message);
 }
 
+export async function getMessageCitations(messageId: string): Promise<Citation[]> {
+  const response = await request<ApiCitationsResponse>(`/api/chat/citations?message_id=${encodeURIComponent(messageId)}`);
+  return response.citations.map(mapCitation);
+}
+
 export async function getFileTree(): Promise<FsNode[]> {
   const nodes = await request<ApiFsNode[]>('/api/fs/tree');
   return nodes.map(mapFsNode);
@@ -164,4 +182,45 @@ export async function createDiaryAutoDraft(rawDir = 'raw', outputDir = 'diary'):
     draft: response.draft,
     message: response.message,
   };
+}
+
+export interface CreateFileResponse {
+  message: string;
+  file_path: string;
+  file_hash: string;
+  sync_status: string;
+}
+
+export interface CreateDirResponse {
+  message: string;
+  dir_path: string;
+  sync_status: string;
+}
+
+export async function createFile(path: string, content = ''): Promise<CreateFileResponse> {
+  return request<CreateFileResponse>('/api/fs/create-file', {
+    method: 'POST',
+    body: JSON.stringify({ path, content }),
+  });
+}
+
+export async function createDirectory(path: string): Promise<CreateDirResponse> {
+  return request<CreateDirResponse>('/api/fs/create-directory', {
+    method: 'POST',
+    body: JSON.stringify({ path }),
+  });
+}
+
+export async function getFileReferences(filePath: string): Promise<FileReference[]> {
+  const response = await request<ApiFileReference[]>(
+    `/api/chat/file-references?path=${encodeURIComponent(filePath)}`,
+  );
+  return response.map((ref) => ({
+    sessionId: ref.session_id,
+    sessionName: ref.session_name,
+    messageId: ref.message_id,
+    role: ref.role === 'ai' ? 'assistant' : 'user',
+    content: ref.content,
+    createdAt: formatTime(ref.created_at),
+  }));
 }

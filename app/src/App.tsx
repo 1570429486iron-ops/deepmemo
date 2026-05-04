@@ -6,7 +6,6 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  Circle,
   Clock3,
   Code2,
   Command,
@@ -34,11 +33,15 @@ import {
 } from 'lucide-react';
 import {
   createDiaryAutoDraft,
+  createDirectory,
+  createFile,
   createSession,
   deleteSession,
   getFileContent,
+  getFileReferences,
   getFileTree,
   getHealth,
+  getMessageCitations,
   listMessages,
   listSessions,
   moveFile,
@@ -46,7 +49,7 @@ import {
   updateFileSyncStatus,
   writeFile,
 } from './api';
-import type { ChatMessage, FsNode, Session, SyncStatus } from './types';
+import type { ChatMessage, Citation, FileReference, FsNode, Session, SyncStatus } from './types';
 
 const exampleQuestions = [
   'DeepMemo 的产品想法是什么？',
@@ -55,7 +58,6 @@ const exampleQuestions = [
 ];
 
 type WorkspaceMode = 'editor' | 'qa';
-type InsightTab = 'sources' | 'pulse' | 'knowledge';
 type FileNode = FsNode;
 
 type SourceChunk = {
@@ -68,6 +70,12 @@ type SourceChunk = {
   excerpt: string;
 };
 
+type SourcePanelItem = SourceChunk & {
+  messageId: string;
+  evidenceId?: string;
+  modified?: string;
+};
+
 type ParsedMarkdown = {
   bodyLines: string[];
   sources: SourceChunk[];
@@ -77,11 +85,6 @@ type ContextMenuState = {
   x: number;
   y: number;
   node: FileNode;
-};
-
-type DraftInfo = {
-  sourceFile?: string;
-  message?: string;
 };
 
 function trimTrailingBlankLines(lines: string[]): string[] {
@@ -194,6 +197,16 @@ function findNode(nodes: FileNode[], id: string): FileNode | undefined {
   return undefined;
 }
 
+function findNodeByPath(nodes: FileNode[], path: string): FileNode | undefined {
+  const normalized = path.replace(/^data\//, '');
+  for (const node of nodes) {
+    if (node.path === normalized) return node;
+    const child = node.children ? findNodeByPath(node.children, normalized) : undefined;
+    if (child) return child;
+  }
+  return undefined;
+}
+
 function countNodes(nodes: FileNode[]): { files: number; folders: number } {
   return nodes.reduce(
     (total, node) => {
@@ -265,31 +278,25 @@ function formatEditorMarkdown(value: string): string {
     .trimStart();
 }
 
-function getActiveSources(messages: ChatMessage[]): SourceChunk[] {
-  const lastAssistant = [...messages].reverse().find((message) => message.role === 'assistant');
-  if (!lastAssistant) return [];
-  return parseMarkdownWithSources(lastAssistant.content).sources;
+function getMessageSources(message?: ChatMessage): SourceChunk[] {
+  if (!message || message.role !== 'assistant') return [];
+  return parseMarkdownWithSources(message.content).sources;
 }
 
-function getKnowledgeCandidates(content: string, entityOptions: string[]) {
-  const entities = entityOptions.filter((entity) => content.toLowerCase().includes(entity.toLowerCase()));
-  const wikiLinks = Array.from(content.matchAll(/\[\[([^\]]+)\]\]/g), (match) => match[1].trim());
-  const headings = content
-    .split('\n')
-    .filter((line) => line.startsWith('## '))
-    .map((line) => line.replace(/^##\s+/, '').trim())
-    .filter(Boolean)
-    .slice(0, 4);
+function mapCitationsToSources(messageId: string, citations: Citation[]): SourcePanelItem[] {
+  return citations.map((citation) => ({
+    messageId,
+    index: citation.localId,
+    path: citation.filePath,
+    startLine: 0,
+    endLine: 0,
+    evidenceId: citation.evidenceId,
+    excerpt: citation.content,
+  }));
+}
 
-  return {
-    entities: Array.from(new Set([...entities, ...wikiLinks])),
-    relations: headings.map((heading, index) => ({
-      id: `${heading}-${index}`,
-      from: '当前文档',
-      relation: index % 2 === 0 ? 'mentions' : 'belongs_to',
-      to: heading,
-    })),
-  };
+function mapParsedSources(messageId: string, sources: SourceChunk[]): SourcePanelItem[] {
+  return sources.map((source) => ({ ...source, messageId }));
 }
 
 function StatusDot({ status }: { status?: SyncStatus }) {
@@ -316,6 +323,7 @@ function DataExplorer({
   expanded,
   contextMenu,
   contextPaths,
+  refreshing,
   onSearchChange,
   onSelectFile,
   onToggleFolder,
@@ -323,6 +331,9 @@ function DataExplorer({
   onCloseContextMenu,
   onUseAsContext,
   onRenameNode,
+  onCreateFile,
+  onCreateFolder,
+  onRefresh,
 }: {
   files: FileNode[];
   activeFileId?: string;
@@ -330,6 +341,7 @@ function DataExplorer({
   expanded: Set<string>;
   contextMenu?: ContextMenuState;
   contextPaths: string[];
+  refreshing: boolean;
   onSearchChange: (value: string) => void;
   onSelectFile: (id: string) => void;
   onToggleFolder: (id: string) => void;
@@ -337,6 +349,9 @@ function DataExplorer({
   onCloseContextMenu: () => void;
   onUseAsContext: (node: FileNode) => void;
   onRenameNode: (node: FileNode) => void;
+  onCreateFile: () => void;
+  onCreateFolder: () => void;
+  onRefresh: () => void;
 }) {
   const counts = useMemo(() => countNodes(files), [files]);
   const visibleFiles = useMemo(() => filterTree(files, searchQuery), [files, searchQuery]);
@@ -364,16 +379,16 @@ function DataExplorer({
       </div>
 
       <div className="explorer-toolbar" aria-label="资源操作">
-        <button type="button" title="新建文件">
+        <button type="button" title="新建文件" onClick={onCreateFile}>
           <FilePlus2 size={16} />
           <span>File</span>
         </button>
-        <button type="button" title="新建文件夹">
+        <button type="button" title="新建文件夹" onClick={onCreateFolder}>
           <FolderPlus size={16} />
           <span>Folder</span>
         </button>
-        <button type="button" title="更多">
-          <MoreHorizontal size={16} />
+        <button type="button" title="刷新" onClick={onRefresh} disabled={refreshing}>
+          <RefreshCw size={16} className={refreshing ? 'spin' : ''} />
         </button>
       </div>
 
@@ -391,6 +406,7 @@ function DataExplorer({
             onOpenContextMenu={onOpenContextMenu}
             onUseAsContext={onUseAsContext}
             onRenameNode={onRenameNode}
+            onCreateFile={onCreateFile}
           />
         ))}
       </nav>
@@ -453,6 +469,7 @@ function FileTreeNode({
   onOpenContextMenu,
   onUseAsContext,
   onRenameNode,
+  onCreateFile,
 }: {
   node: FileNode;
   level: number;
@@ -464,6 +481,7 @@ function FileTreeNode({
   onOpenContextMenu: (menu: ContextMenuState) => void;
   onUseAsContext: (node: FileNode) => void;
   onRenameNode: (node: FileNode) => void;
+  onCreateFile: (parentPath: string) => void;
 }) {
   const isFolder = node.type === 'directory';
   const isExpanded = expanded.has(node.id);
@@ -505,7 +523,10 @@ function FileTreeNode({
         {inContext && <AtSign className="file-node__context" size={13} />}
         {!isFolder && <StatusDot status={node.syncStatus} />}
         <span className="file-node__hover-actions">
-          <span role="button" tabIndex={-1} title="新建文件" onClick={(event) => event.stopPropagation()}>
+          <span role="button" tabIndex={-1} title="新建文件" onClick={(event) => {
+            event.stopPropagation();
+            onCreateFile(node.path);
+          }}>
             <FilePlus2 size={13} />
           </span>
           {isFolder && (
@@ -533,6 +554,7 @@ function FileTreeNode({
               onOpenContextMenu={onOpenContextMenu}
               onUseAsContext={onUseAsContext}
               onRenameNode={onRenameNode}
+              onCreateFile={onCreateFile}
             />
           ))}
         </div>
@@ -544,27 +566,21 @@ function FileTreeNode({
 function WorkspaceHeader({
   activeFile,
   mode,
-  apiStatus,
-  refreshing,
   saving,
   onModeChange,
   onAiComplete,
   onSave,
   onFormat,
   onExport,
-  onRefresh,
 }: {
   activeFile?: FileNode;
   mode: WorkspaceMode;
-  apiStatus: 'checking' | 'online' | 'offline';
-  refreshing: boolean;
   saving: boolean;
   onModeChange: (mode: WorkspaceMode) => void;
   onAiComplete: () => void;
   onSave: () => void;
   onFormat: () => void;
   onExport: () => void;
-  onRefresh: () => void;
 }) {
   return (
     <header className="workspace-header">
@@ -593,10 +609,6 @@ function WorkspaceHeader({
       </div>
 
       <div className="workspace-actions">
-        <span className={`api-pill api-pill--${apiStatus}`}>
-          <Circle size={8} fill="currentColor" />
-          {apiStatus === 'checking' ? 'Checking' : apiStatus === 'online' ? 'Online' : 'Offline'}
-        </span>
         <button type="button" onClick={onAiComplete}>
           <WandSparkles size={15} />
           AI 补完
@@ -612,9 +624,6 @@ function WorkspaceHeader({
         <button type="button" onClick={onExport}>
           <FileDown size={15} />
           导出
-        </button>
-        <button className="icon-button" type="button" onClick={onRefresh} disabled={refreshing} title="刷新问答会话">
-          <RefreshCw size={17} className={refreshing ? 'spin' : ''} />
         </button>
       </div>
     </header>
@@ -704,7 +713,17 @@ function EditorContent({
   );
 }
 
-function MarkdownLite({ content }: { content: string }) {
+function MarkdownLite({
+  content,
+  activeCitationIndex,
+  onCitationHover,
+  onCitationSelect,
+}: {
+  content: string;
+  activeCitationIndex?: number;
+  onCitationHover?: (index?: number) => void;
+  onCitationSelect?: (index: number) => void;
+}) {
   const { bodyLines, sources } = useMemo(() => parseMarkdownWithSources(content), [content]);
   const [activeSourceIndexes, setActiveSourceIndexes] = useState<Set<number>>(new Set());
   const sourceIndexes = useMemo(() => new Set(sources.map((source) => source.index)), [sources]);
@@ -731,12 +750,18 @@ function MarkdownLite({ content }: { content: string }) {
       const match = /^\[(\d+)\]$/.exec(part);
       const sourceIndex = match ? Number(match[1]) : undefined;
       if (sourceIndex && sourceIndexes.has(sourceIndex)) {
+        const isActive = activeCitationIndex === sourceIndex || activeSourceIndexes.has(sourceIndex);
         return (
           <button
-            className={`citation ${activeSourceIndexes.has(sourceIndex) ? 'citation--active' : ''}`}
+            className={`citation ${isActive ? 'citation--active' : ''}`}
             type="button"
             key={`${lineIndex}-${partIndex}-${part}`}
-            onClick={() => toggleSource(sourceIndex)}
+            onMouseEnter={() => onCitationHover?.(sourceIndex)}
+            onMouseLeave={() => onCitationHover?.(undefined)}
+            onClick={() => {
+              toggleSource(sourceIndex);
+              onCitationSelect?.(sourceIndex);
+            }}
           >
             {part}
           </button>
@@ -776,11 +801,20 @@ function MarkdownLite({ content }: { content: string }) {
           <h2>引用</h2>
           <div className="reference-list">
             {sources.map((source) => {
-              const isActive = activeSourceIndexes.has(source.index);
+              const isActive = activeCitationIndex === source.index || activeSourceIndexes.has(source.index);
               const chunkText = `${source.query ? `query: ${source.query}\n\n` : ''}${source.excerpt}`;
               return (
                 <article className={`reference-item ${isActive ? 'reference-item--active' : ''}`} key={`${source.index}-${source.path}`}>
-                  <button className="reference-trigger" type="button" onClick={() => toggleSource(source.index)}>
+                  <button
+                    className="reference-trigger"
+                    type="button"
+                    onMouseEnter={() => onCitationHover?.(source.index)}
+                    onMouseLeave={() => onCitationHover?.(undefined)}
+                    onClick={() => {
+                      toggleSource(source.index);
+                      onCitationSelect?.(source.index);
+                    }}
+                  >
                     <span className="source-index">[{source.index}]</span>
                     <span className="reference-path">
                       {source.path}:{source.startLine}-{source.endLine}
@@ -806,12 +840,20 @@ function MessageList({
   messages,
   loading,
   booting,
+  activeMessageId,
+  activeCitationIndex,
   onAskExample,
+  onActivateMessage,
+  onCitationHover,
 }: {
   messages: ChatMessage[];
   loading: boolean;
   booting: boolean;
+  activeMessageId?: string;
+  activeCitationIndex?: number;
   onAskExample: (question: string) => void;
+  onActivateMessage: (message: ChatMessage) => void;
+  onCitationHover: (index?: number) => void;
 }) {
   if (booting) {
     return (
@@ -846,10 +888,25 @@ function MessageList({
   return (
     <div className="message-list" aria-live="polite">
       {messages.map((message) => (
-        <article className={`message message--${message.role}`} key={message.id}>
+        <article
+          className={`message message--${message.role} ${activeMessageId === message.id ? 'message--active' : ''}`}
+          key={message.id}
+          onClick={() => onActivateMessage(message)}
+        >
           <div className="message__meta">{message.role === 'user' ? '你' : 'DeepMemo'} · {message.createdAt}</div>
           <div className="message__bubble">
-            <MarkdownLite content={message.content} />
+            <MarkdownLite
+              content={message.content}
+              activeCitationIndex={activeMessageId === message.id ? activeCitationIndex : undefined}
+              onCitationHover={(index) => {
+                onActivateMessage(message);
+                onCitationHover(index);
+              }}
+              onCitationSelect={(index) => {
+                onActivateMessage(message);
+                onCitationHover(index);
+              }}
+            />
           </div>
         </article>
       ))}
@@ -997,9 +1054,10 @@ function HybridWorkspace({
   booting,
   creating,
   deleting,
-  apiStatus,
   contextPaths,
   entityOptions,
+  activeMessageId,
+  activeCitationIndex,
   onEditorChange,
   onInsertEntity,
   onSlashCommand,
@@ -1011,6 +1069,8 @@ function HybridWorkspace({
   onSubmit,
   onAutoDraft,
   onRefactor,
+  onActivateMessage,
+  onCitationHover,
 }: {
   mode: WorkspaceMode;
   activeFile?: FileNode;
@@ -1025,9 +1085,10 @@ function HybridWorkspace({
   booting: boolean;
   creating: boolean;
   deleting: boolean;
-  apiStatus: 'checking' | 'online' | 'offline';
   contextPaths: string[];
   entityOptions: string[];
+  activeMessageId?: string;
+  activeCitationIndex?: number;
   onEditorChange: (value: string) => void;
   onInsertEntity: (entity: string) => void;
   onSlashCommand: (command: 'daily' | 'extract' | 'polish') => void;
@@ -1039,9 +1100,11 @@ function HybridWorkspace({
   onSubmit: () => void;
   onAutoDraft: () => void;
   onRefactor: () => void;
+  onActivateMessage: (message: ChatMessage) => void;
+  onCitationHover: (index?: number) => void;
 }) {
   return (
-    <section className="hybrid-workspace">
+    <section className={`hybrid-workspace hybrid-workspace--${mode}`}>
       <div className="workspace-body">
         {mode === 'editor' ? (
           <EditorContent
@@ -1064,90 +1127,95 @@ function HybridWorkspace({
               onCreateSession={onCreateSession}
               onDeleteSession={onDeleteSession}
             />
-            <MessageList messages={messages} loading={loading} booting={booting} onAskExample={onAskExample} />
+            <MessageList
+              messages={messages}
+              loading={loading}
+              booting={booting}
+              activeMessageId={activeMessageId}
+              activeCitationIndex={activeCitationIndex}
+              onAskExample={onAskExample}
+              onActivateMessage={onActivateMessage}
+              onCitationHover={onCitationHover}
+            />
           </div>
         )}
       </div>
 
-      <AiCommandBar
-        value={input}
-        onChange={onInputChange}
-        onSubmit={onSubmit}
-        onAutoDraft={onAutoDraft}
-        onRefactor={onRefactor}
-        loading={loading}
-        draftLoading={streaming}
-        disabled={booting || apiStatus !== 'online' || !activeSessionId}
-        activeSession={activeSession}
-        contextPaths={contextPaths}
-      />
+      {mode === 'qa' && (
+        <AiCommandBar
+          value={input}
+          onChange={onInputChange}
+          onSubmit={onSubmit}
+          onAutoDraft={onAutoDraft}
+          onRefactor={onRefactor}
+          loading={loading}
+          draftLoading={streaming}
+          disabled={booting || !activeSessionId}
+          activeSession={activeSession}
+          contextPaths={contextPaths}
+        />
+      )}
     </section>
   );
 }
 
-function InsightsPanel({
-  activeTab,
+function SourcePanel({
+  mode,
+  activeMessage,
+  sources,
+  sourcesLoading,
+  sourcesError,
+  activeCitationIndex,
+  onCitationHover,
+  onOpenSourceFile,
   activeFile,
-  editorValue,
-  messages,
-  entityOptions,
-  fileCounts,
-  contextPaths,
-  draftInfo,
-  confirmedEntities,
-  onTabChange,
-  onConfirmEntity,
+  fileRefs,
+  fileRefsLoading,
+  fileRefsError,
+  onNavigateToFileReference,
 }: {
-  activeTab: InsightTab;
+  mode: WorkspaceMode;
+  activeMessage?: ChatMessage;
+  sources: SourcePanelItem[];
+  sourcesLoading: boolean;
+  sourcesError?: string;
+  activeCitationIndex?: number;
+  onCitationHover: (index?: number) => void;
+  onOpenSourceFile: (path: string) => void;
   activeFile?: FileNode;
-  editorValue: string;
-  messages: ChatMessage[];
-  entityOptions: string[];
-  fileCounts: { files: number; folders: number };
-  contextPaths: string[];
-  draftInfo?: DraftInfo;
-  confirmedEntities: Set<string>;
-  onTabChange: (tab: InsightTab) => void;
-  onConfirmEntity: (entity: string) => void;
+  fileRefs: FileReference[];
+  fileRefsLoading: boolean;
+  fileRefsError?: string;
+  onNavigateToFileReference: (ref: FileReference) => void;
 }) {
-  const sources = useMemo(() => getActiveSources(messages), [messages]);
-  const knowledge = useMemo(() => getKnowledgeCandidates(editorValue, entityOptions), [editorValue, entityOptions]);
-
+  const isEditorMode = mode === 'editor';
   return (
-    <aside className="insights-panel">
-      <div className="insights-panel__header">
+    <aside className="source-panel">
+      <div className="source-panel__header">
         <div>
-          <strong>Insights</strong>
-          <span>{activeFile?.name ?? '未选择文件'}</span>
+          <strong>Source</strong>
+          <span>{isEditorMode ? (activeFile?.name ?? '未选择文件') : (activeMessage?.createdAt ?? '未选择消息')}</span>
         </div>
       </div>
 
-      <div className="insight-tabs" role="tablist" aria-label="智能上下文面板">
-        <button className={activeTab === 'sources' ? 'active' : ''} type="button" onClick={() => onTabChange('sources')}>
-          <Link2 size={15} />
-          Sources
-        </button>
-        <button className={activeTab === 'pulse' ? 'active' : ''} type="button" onClick={() => onTabChange('pulse')}>
-          <Clock3 size={15} />
-          Pulse
-        </button>
-        <button className={activeTab === 'knowledge' ? 'active' : ''} type="button" onClick={() => onTabChange('knowledge')}>
-          <Network size={15} />
-          Knowledge
-        </button>
-      </div>
-
-      <div className="insights-panel__body">
-        {activeTab === 'sources' && <SourcesView sources={sources} />}
-        {activeTab === 'pulse' && (
-          <DailyPulse activeFile={activeFile} counts={fileCounts} contextPaths={contextPaths} draftInfo={draftInfo} />
-        )}
-        {activeTab === 'knowledge' && (
-          <KnowledgeExtraction
-            entities={knowledge.entities}
-            relations={knowledge.relations}
-            confirmedEntities={confirmedEntities}
-            onConfirmEntity={onConfirmEntity}
+      <div className="source-panel__body">
+        {isEditorMode ? (
+          <FileReferencesView
+            activeFile={activeFile}
+            fileRefs={fileRefs}
+            loading={fileRefsLoading}
+            error={fileRefsError}
+            onNavigate={onNavigateToFileReference}
+          />
+        ) : (
+          <SourcesView
+            message={activeMessage}
+            sources={sources}
+            loading={sourcesLoading}
+            error={sourcesError}
+            activeCitationIndex={activeCitationIndex}
+            onCitationHover={onCitationHover}
+            onOpenSourceFile={onOpenSourceFile}
           />
         )}
       </div>
@@ -1155,144 +1223,259 @@ function InsightsPanel({
   );
 }
 
-function SourcesView({ sources }: { sources: SourceChunk[] }) {
+function FileReferencesView({
+  activeFile,
+  fileRefs,
+  loading,
+  error,
+  onNavigate,
+}: {
+  activeFile?: FileNode;
+  fileRefs: FileReference[];
+  loading: boolean;
+  error?: string;
+  onNavigate: (ref: FileReference) => void;
+}) {
+  const [expandedRefKeys, setExpandedRefKeys] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    setExpandedRefKeys(new Set());
+  }, [activeFile?.path]);
+
+  const toggleRef = (key: string) => {
+    setExpandedRefKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  if (!activeFile || activeFile.type !== 'file') {
+    return (
+      <div className="empty-panel">
+        <FileText size={18} />
+        <span>选择一个文件查看引用它的会话</span>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="empty-panel">
+        <div className="typing">
+          <span />
+          <span />
+          <span />
+        </div>
+        <span>正在查找引用当前文件的会话...</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="empty-panel">
+        <AlertCircle size={18} />
+        <span>{error}</span>
+      </div>
+    );
+  }
+
+  if (fileRefs.length === 0) {
+    return (
+      <div className="empty-panel">
+        <Link2 size={18} />
+        <span>暂无会话引用此文件</span>
+      </div>
+    );
+  }
+
+  // Group by session
+  const sessionGroups = new Map<string, { sessionName: string; refs: FileReference[] }>();
+  for (const ref of fileRefs) {
+    const existing = sessionGroups.get(ref.sessionId);
+    if (existing) {
+      existing.refs.push(ref);
+    } else {
+      sessionGroups.set(ref.sessionId, { sessionName: ref.sessionName, refs: [ref] });
+    }
+  }
+
+  return (
+    <div className="source-list">
+      {[...sessionGroups.entries()].map(([sessionId, group]) => (
+        <div className="file-ref-group" key={sessionId}>
+          <div className="message-group">
+            <MessageSquare size={13} />
+            <strong>{group.sessionName}</strong>
+            <span className="file-ref-count">{group.refs.length} 条引用</span>
+          </div>
+          {group.refs.map((ref) => {
+            const refKey = `${ref.messageId}`;
+            const isExpanded = expandedRefKeys.has(refKey);
+            const preview = ref.content.length > 120 ? ref.content.slice(0, 120) + '...' : ref.content;
+            return (
+              <article className="source-card" key={refKey}>
+                <button
+                  className="source-card__summary"
+                  type="button"
+                  aria-expanded={isExpanded}
+                  onClick={() => toggleRef(refKey)}
+                >
+                  <div className="source-card__top">
+                    <span className="source-index">
+                      {ref.role === 'assistant' ? <Bot size={13} /> : <UserRound size={13} />}
+                    </span>
+                    <span className="source-card__meta">
+                      <span>{ref.createdAt}</span>
+                      {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                    </span>
+                  </div>
+                  <span className="source-card__path file-ref-preview">{preview}</span>
+                </button>
+                {isExpanded && (
+                  <div className="source-card__detail">
+                    <p className="file-ref-content">{ref.content}</p>
+                    <button
+                      className="source-card__open"
+                      type="button"
+                      onClick={() => onNavigate(ref)}
+                    >
+                      <MessageSquare size={14} />
+                      跳转到会话
+                    </button>
+                  </div>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SourcesView({
+  message,
+  sources,
+  loading,
+  error,
+  activeCitationIndex,
+  onCitationHover,
+  onOpenSourceFile,
+}: {
+  message?: ChatMessage;
+  sources: SourcePanelItem[];
+  loading: boolean;
+  error?: string;
+  activeCitationIndex?: number;
+  onCitationHover: (index?: number) => void;
+  onOpenSourceFile: (path: string) => void;
+}) {
+  const [expandedSourceKeys, setExpandedSourceKeys] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    setExpandedSourceKeys(new Set());
+  }, [message?.id]);
+
+  const toggleSource = (key: string) => {
+    setExpandedSourceKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  if (!message) {
+    return (
+      <div className="empty-panel">
+        <MessageSquare size={18} />
+        <span>点击一条问答消息查看独立引用分组</span>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="empty-panel">
+        <div className="typing">
+          <span />
+          <span />
+          <span />
+        </div>
+        <span>正在读取引用证据链</span>
+      </div>
+    );
+  }
+
   if (sources.length === 0) {
     return (
       <div className="empty-panel">
         <Link2 size={18} />
-        <span>暂无引用片段</span>
+        <span>{error ? `引用接口不可用：${error}` : '当前消息暂无引用片段'}</span>
       </div>
     );
   }
 
   return (
     <div className="source-list">
-      {sources.map((source) => (
-        <article className="source-card" key={`${source.index}-${source.path}`}>
-          <div className="source-card__top">
-            <span className="source-index">[{source.index}]</span>
-            {source.score !== undefined && (
-              <span className={`score score--${scoreLevel(source.score)}`}>
-                {Math.round(source.score * 100)}%
+      <div className="message-group">
+        <span>Message Group</span>
+        <strong>{message.role === 'assistant' ? 'DeepMemo' : '你'} · {message.createdAt}</strong>
+      </div>
+      {error && <div className="inline-warning">{error}，已使用消息正文中的引用片段。</div>}
+      {sources.map((source) => {
+        const sourceKey = `${source.messageId}-${source.index}-${source.path}`;
+        const isExpanded = expandedSourceKeys.has(sourceKey);
+        return (
+          <article
+            className={`source-card ${activeCitationIndex === source.index ? 'source-card--active' : ''}`}
+            key={sourceKey}
+            onMouseEnter={() => onCitationHover(source.index)}
+            onMouseLeave={() => onCitationHover(undefined)}
+          >
+            <button
+              className="source-card__summary"
+              type="button"
+              aria-expanded={isExpanded}
+              onClick={() => toggleSource(sourceKey)}
+            >
+              <div className="source-card__top">
+                <span className="source-index">[{source.index}]</span>
+                <span className="source-card__meta">
+                  {source.score !== undefined && (
+                    <span className={`score score--${scoreLevel(source.score)}`}>
+                      {Math.round(source.score * 100)}%
+                    </span>
+                  )}
+                  {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                </span>
+              </div>
+              <span className="source-card__path">{source.path}</span>
+              <span className="source-card__file">
+                {source.startLine > 0 ? `Lines ${source.startLine}-${source.endLine}` : source.evidenceId ?? 'fingerprint citation'}
               </span>
+            </button>
+            {isExpanded && (
+              <div className="source-card__detail">
+                <p>{source.excerpt}</p>
+                <button className="source-card__open" type="button" onClick={() => onOpenSourceFile(source.path)}>
+                  <Link2 size={14} />
+                  打开来源文件
+                </button>
+              </div>
             )}
-          </div>
-          <strong>{source.path}</strong>
-          <span className="source-card__file">Lines {source.startLine}-{source.endLine}</span>
-          <p>{source.excerpt}</p>
-        </article>
-      ))}
-    </div>
-  );
-}
-
-function DailyPulse({
-  activeFile,
-  counts,
-  contextPaths,
-  draftInfo,
-}: {
-  activeFile?: FileNode;
-  counts: { files: number; folders: number };
-  contextPaths: string[];
-  draftInfo?: DraftInfo;
-}) {
-  return (
-    <div className="pulse-list">
-      <article className="pulse-card">
-        <div className="pulse-card__icon">
-          <FileText size={16} />
-        </div>
-        <div>
-          <strong>当前文件</strong>
-          <p>{activeFile ? `data/${activeFile.path} · ${activeFile.syncStatus}` : '后端未返回可编辑文件'}</p>
-        </div>
-      </article>
-      <article className="pulse-card">
-        <div className="pulse-card__icon">
-          <Database size={16} />
-        </div>
-        <div>
-          <strong>文件系统</strong>
-          <p>{counts.files} files · {counts.folders} folders · 来自 /api/fs/tree</p>
-        </div>
-      </article>
-      <article className="pulse-card">
-        <div className="pulse-card__icon">
-          <Bot size={16} />
-        </div>
-        <div>
-          <strong>AI 上下文</strong>
-          <p>{contextPaths.length > 0 ? contextPaths.join('、') : '未选择上下文目录'}</p>
-        </div>
-      </article>
-      {draftInfo && (
-        <article className="pulse-card">
-          <div className="pulse-card__icon">
-            <WandSparkles size={16} />
-          </div>
-          <div>
-            <strong>自动草稿</strong>
-            <p>{draftInfo.sourceFile ? `${draftInfo.sourceFile} · ${draftInfo.message ?? ''}` : draftInfo.message}</p>
-          </div>
-        </article>
-      )}
-    </div>
-  );
-}
-
-function KnowledgeExtraction({
-  entities,
-  relations,
-  confirmedEntities,
-  onConfirmEntity,
-}: {
-  entities: string[];
-  relations: Array<{ id: string; from: string; relation: string; to: string }>;
-  confirmedEntities: Set<string>;
-  onConfirmEntity: (entity: string) => void;
-}) {
-  return (
-    <div className="knowledge-view">
-      <section>
-        <h3>Entity Candidates</h3>
-        <div className="entity-list">
-          {entities.map((entity) => {
-            const confirmed = confirmedEntities.has(entity);
-            return (
-              <button
-                className={confirmed ? 'entity-chip entity-chip--confirmed' : 'entity-chip'}
-                type="button"
-                key={entity}
-                onClick={() => onConfirmEntity(entity)}
-              >
-                {confirmed ? <Check size={14} /> : <Circle size={14} />}
-                {entity}
-              </button>
-            );
-          })}
-        </div>
-      </section>
-
-      <section>
-        <h3>Relation Candidates</h3>
-        <div className="relation-list">
-          {relations.length === 0 ? (
-            <div className="empty-panel empty-panel--compact">
-              <Network size={16} />
-              <span>暂无关系候选</span>
-            </div>
-          ) : (
-            relations.map((relation) => (
-              <article className="relation-card" key={relation.id}>
-                <span>{relation.from}</span>
-                <strong>{relation.relation}</strong>
-                <span>{relation.to}</span>
-              </article>
-            ))
-          )}
-        </div>
-      </section>
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -1307,21 +1490,25 @@ export function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [apiStatus, setApiStatus] = useState<'checking' | 'online' | 'offline'>('checking');
   const [error, setError] = useState<string>();
   const [searchQuery, setSearchQuery] = useState('');
   const [files, setFiles] = useState<FileNode[]>([]);
   const [activeFileId, setActiveFileId] = useState<string>();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [mode, setMode] = useState<WorkspaceMode>('editor');
-  const [insightTab, setInsightTab] = useState<InsightTab>('knowledge');
   const [fileContents, setFileContents] = useState<Record<string, string>>({});
   const [contextPaths, setContextPaths] = useState<string[]>(['diary', 'ideas']);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>();
   const [drafting, setDrafting] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [draftInfo, setDraftInfo] = useState<DraftInfo>();
-  const [confirmedEntities, setConfirmedEntities] = useState<Set<string>>(new Set());
+  const [activeMessageId, setActiveMessageId] = useState<string>();
+  const [activeCitationIndex, setActiveCitationIndex] = useState<number>();
+  const [remoteCitations, setRemoteCitations] = useState<Record<string, Citation[]>>({});
+  const [citationLoading, setCitationLoading] = useState(false);
+  const [citationError, setCitationError] = useState<string>();
+  const [fileRefs, setFileRefs] = useState<FileReference[]>([]);
+  const [fileRefsLoading, setFileRefsLoading] = useState(false);
+  const [fileRefsError, setFileRefsError] = useState<string>();
 
   const activeFile = useMemo(
     () => (activeFileId ? findNode(files, activeFileId) : undefined),
@@ -1331,9 +1518,21 @@ export function App() {
     () => sessions.find((session) => session.sessionId === activeSessionId),
     [activeSessionId, sessions],
   );
+  const activeMessage = useMemo(
+    () => activeMessageId ? messages.find((message) => message.id === activeMessageId) : undefined,
+    [activeMessageId, messages],
+  );
   const editorValue = activeFileId ? fileContents[activeFileId] ?? '' : '';
-  const fileCounts = useMemo(() => countNodes(files), [files]);
   const entityOptions = useMemo(() => deriveEntityOptions(files, editorValue), [files, editorValue]);
+  const activeParsedSources = useMemo(() => getMessageSources(activeMessage), [activeMessage]);
+  const activeSources = useMemo(() => {
+    if (!activeMessage) return [];
+    const citations = remoteCitations[activeMessage.id];
+    if (citations && citations.length > 0) {
+      return mapCitationsToSources(activeMessage.id, citations);
+    }
+    return mapParsedSources(activeMessage.id, activeParsedSources);
+  }, [activeMessage, activeParsedSources, remoteCitations]);
 
   const setActiveEditorValue = (value: string) => {
     if (!activeFileId) return;
@@ -1399,7 +1598,6 @@ export function App() {
       try {
         await getHealth();
         if (cancelled) return;
-        setApiStatus('online');
         const sessionId = await ensureSession();
         if (cancelled) return;
         const nextFile = await refreshFileTree(activeFileId);
@@ -1410,7 +1608,6 @@ export function App() {
         ]);
       } catch (caught) {
         if (cancelled) return;
-        setApiStatus('offline');
         setError(caught instanceof Error ? caught.message : '后端连接失败');
       } finally {
         if (!cancelled) {
@@ -1448,6 +1645,82 @@ export function App() {
     };
   }, [activeFile?.id]);
 
+  useEffect(() => {
+    if (mode === 'qa') {
+      const latestAssistant = [...messages].reverse().find((message) => message.role === 'assistant');
+      const latestMessage = latestAssistant ?? messages[messages.length - 1];
+      if (latestMessage && !messages.some((message) => message.id === activeMessageId)) {
+        setActiveMessageId(latestMessage.id);
+      }
+    }
+  }, [mode, messages, activeMessageId]);
+
+  useEffect(() => {
+    if (!activeMessage || activeMessage.role !== 'assistant' || activeMessage.id.startsWith('local-')) {
+      setCitationError(undefined);
+      return;
+    }
+    if (remoteCitations[activeMessage.id]) return;
+
+    let cancelled = false;
+    setCitationLoading(true);
+    setCitationError(undefined);
+    getMessageCitations(activeMessage.id)
+      .then((citations) => {
+        if (!cancelled) {
+          setRemoteCitations((current) => ({ ...current, [activeMessage.id]: citations }));
+        }
+      })
+      .catch((caught) => {
+        if (!cancelled) {
+          setCitationError(caught instanceof Error ? caught.message : '引用加载失败');
+          setRemoteCitations((current) => ({ ...current, [activeMessage.id]: [] }));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setCitationLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeMessage?.id, activeMessage?.role, remoteCitations]);
+
+
+  // Fetch file references when editing a file (editor mode)
+  useEffect(() => {
+    if (mode !== 'editor' || !activeFile || activeFile.type !== 'file') {
+      setFileRefs([]);
+      return;
+    }
+    let cancelled = false;
+    setFileRefsLoading(true);
+    setFileRefsError(undefined);
+    getFileReferences(activeFile.path)
+      .then((refs) => {
+        if (!cancelled) setFileRefs(refs);
+      })
+      .catch((caught) => {
+        if (!cancelled) {
+          setFileRefsError(caught instanceof Error ? caught.message : '引用加载失败');
+          setFileRefs([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setFileRefsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, activeFile?.path, activeFile?.type]);
+
+  const handleNavigateToFileReference = (ref: FileReference) => {
+    setActiveSessionId(ref.sessionId);
+    setActiveMessageId(ref.messageId);
+    setMode('qa');
+  };
   const handleCreateSession = async () => {
     setCreating(true);
     setError(undefined);
@@ -1469,7 +1742,6 @@ export function App() {
     setError(undefined);
     try {
       await getHealth();
-      setApiStatus('online');
       const selectedId = await refreshSessionList(activeSessionId);
       const nextFile = await refreshFileTree(activeFileId);
       if (selectedId) {
@@ -1479,7 +1751,6 @@ export function App() {
         await loadFileContent(nextFile);
       }
     } catch (caught) {
-      setApiStatus('offline');
       setError(caught instanceof Error ? caught.message : '刷新失败');
     } finally {
       setRefreshing(false);
@@ -1517,7 +1788,6 @@ export function App() {
 
     const optimistic = createOptimisticUserMessage(activeSessionId, trimmed);
     setMode('qa');
-    setInsightTab('sources');
     setInput('');
     setLoading(true);
     setError(undefined);
@@ -1558,7 +1828,6 @@ export function App() {
   const handleSelectFile = (id: string) => {
     setActiveFileId(id);
     setMode('editor');
-    setInsightTab('knowledge');
   };
 
   const handleUseAsContext = (node: FileNode) => {
@@ -1569,15 +1838,39 @@ export function App() {
     setContextMenu(undefined);
   };
 
+  const handleActivateMessage = (message: ChatMessage) => {
+    setActiveMessageId(message.id);
+  };
+
+  const handleOpenSourceFile = async (path: string) => {
+    const node = findNodeByPath(files, path);
+    if (!node || node.type !== 'file') {
+      setError(`未在文件树中找到 ${path}`);
+      return;
+    }
+    setActiveFileId(node.id);
+    setMode('editor');
+    setExpanded((current) => {
+      const next = new Set(current);
+      path.split('/').slice(0, -1).reduce((prefix, part) => {
+        const nextPath = prefix ? `${prefix}/${part}` : part;
+        next.add(nextPath);
+        return nextPath;
+      }, '');
+      return next;
+    });
+    if (fileContents[node.id] === undefined) {
+      await loadFileContent(node);
+    }
+  };
+
   const handleAutoDraft = async () => {
     if (drafting) return;
     setMode('editor');
-    setInsightTab('pulse');
     setDrafting(true);
     setError(undefined);
     try {
       const response = await createDiaryAutoDraft('raw', 'diary');
-      setDraftInfo({ sourceFile: response.sourceFile, message: response.message });
       if (response.draft.trim().length > 0) {
         setActiveEditorValue(response.draft);
       } else {
@@ -1662,6 +1955,32 @@ export function App() {
     }
   };
 
+  const handleCreateFile = async (parentPath?: string) => {
+    const base = parentPath ? `${parentPath}/` : '';
+    const name = window.prompt('输入文件名', parentPath ? '' : 'diary/')?.trim();
+    if (!name) return;
+    const fullPath = name.startsWith(base) ? name : `${base}${name}`;
+    setError(undefined);
+    try {
+      await createFile(fullPath, '');
+      await refreshFileTree();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '创建文件失败');
+    }
+  };
+
+  const handleCreateFolder = async () => {
+    const name = window.prompt('输入文件夹名（如 ideas/projects）')?.trim();
+    if (!name) return;
+    setError(undefined);
+    try {
+      await createDirectory(name);
+      await refreshFileTree();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '创建文件夹失败');
+    }
+  };
+
   const handleAiComplete = () => {
     requestEditorAi(
       `请基于当前文件 ${activeFile?.path ?? '未选择文件'} 和上下文 ${contextPaths.join('、')}，补完下面的 Markdown，不要编造未给出的事实：\n\n${editorValue}`,
@@ -1693,7 +2012,6 @@ export function App() {
       handleAutoDraft();
     }
     if (command === 'extract') {
-      setInsightTab('knowledge');
       setActiveEditorValue(`${editorValue.replace(/\/$/i, '').trimEnd()}\n\n<!-- extract-knowledge queued -->\n`);
     }
     if (command === 'polish') {
@@ -1702,18 +2020,6 @@ export function App() {
         'Polish',
       );
     }
-  };
-
-  const handleConfirmEntity = (entity: string) => {
-    setConfirmedEntities((current) => {
-      const next = new Set(current);
-      if (next.has(entity)) {
-        next.delete(entity);
-      } else {
-        next.add(entity);
-      }
-      return next;
-    });
   };
 
   return (
@@ -1725,6 +2031,7 @@ export function App() {
         expanded={expanded}
         contextMenu={contextMenu}
         contextPaths={contextPaths}
+        refreshing={refreshing}
         onSearchChange={setSearchQuery}
         onSelectFile={handleSelectFile}
         onToggleFolder={handleToggleFolder}
@@ -1732,21 +2039,21 @@ export function App() {
         onCloseContextMenu={() => setContextMenu(undefined)}
         onUseAsContext={handleUseAsContext}
         onRenameNode={handleRenameNode}
+        onCreateFile={handleCreateFile}
+        onCreateFolder={handleCreateFolder}
+        onRefresh={handleRefresh}
       />
 
       <main className="workspace">
         <WorkspaceHeader
           activeFile={activeFile}
           mode={mode}
-          apiStatus={apiStatus}
-          refreshing={refreshing}
           saving={saving}
           onModeChange={setMode}
           onAiComplete={handleAiComplete}
           onSave={handleSave}
           onFormat={handleFormat}
           onExport={handleExport}
-          onRefresh={handleRefresh}
         />
         {error && (
           <div className="error-banner">
@@ -1768,9 +2075,10 @@ export function App() {
           booting={booting}
           creating={creating}
           deleting={deleting}
-          apiStatus={apiStatus}
           contextPaths={contextPaths}
           entityOptions={entityOptions}
+          activeMessageId={activeMessageId}
+          activeCitationIndex={activeCitationIndex}
           onEditorChange={setActiveEditorValue}
           onInsertEntity={handleInsertEntity}
           onSlashCommand={handleSlashCommand}
@@ -1782,21 +2090,25 @@ export function App() {
           onSubmit={() => submitQuestion()}
           onAutoDraft={handleAutoDraft}
           onRefactor={handleRefactor}
+          onActivateMessage={handleActivateMessage}
+          onCitationHover={setActiveCitationIndex}
         />
       </main>
 
-      <InsightsPanel
-        activeTab={insightTab}
+      <SourcePanel
+        mode={mode}
+        activeMessage={activeMessage}
+        sources={activeSources}
+        sourcesLoading={citationLoading}
+        sourcesError={citationError}
+        activeCitationIndex={activeCitationIndex}
+        onCitationHover={setActiveCitationIndex}
+        onOpenSourceFile={handleOpenSourceFile}
         activeFile={activeFile}
-        editorValue={editorValue}
-        messages={messages}
-        entityOptions={entityOptions}
-        fileCounts={fileCounts}
-        contextPaths={contextPaths}
-        draftInfo={draftInfo}
-        confirmedEntities={confirmedEntities}
-        onTabChange={setInsightTab}
-        onConfirmEntity={handleConfirmEntity}
+        fileRefs={fileRefs}
+        fileRefsLoading={fileRefsLoading}
+        fileRefsError={fileRefsError}
+        onNavigateToFileReference={handleNavigateToFileReference}
       />
     </div>
   );
