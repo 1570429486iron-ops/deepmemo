@@ -1,6 +1,7 @@
 import json
 import uuid
 from datetime import datetime
+from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -15,6 +16,7 @@ from src.routers.citations import router as citations_router
 
 
 app = FastAPI(title="DeepMemo API", version="0.2.0")
+DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 
 app.add_middleware(
     CORSMiddleware,
@@ -258,9 +260,31 @@ class FileReferenceItem(BaseModel):
     created_at: datetime
 
 
+def normalize_reference_path(value: str | None) -> str:
+    """Normalize stored and requested citation paths to data-relative POSIX paths."""
+    if not value:
+        return ""
+
+    normalized = str(value).strip().replace("\\", "/")
+    try:
+        path = Path(normalized).expanduser()
+        if path.is_absolute():
+            return path.resolve().relative_to(DATA_DIR.resolve()).as_posix()
+    except (OSError, ValueError):
+        pass
+
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    normalized = normalized.lstrip("/")
+    if normalized.startswith("data/"):
+        normalized = normalized[len("data/"):]
+    return normalized
+
+
 @app.get("/api/chat/file-references", response_model=list[FileReferenceItem])
 def get_file_references(path: str):
     """获取引用了指定文件的所有消息"""
+    target_path = normalize_reference_path(path)
     conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -278,7 +302,7 @@ def get_file_references(path: str):
     for row in rows:
         try:
             citations = json.loads(row["citations"] or "[]")
-            if any(c.get("file_path") == path for c in citations):
+            if any(normalize_reference_path(c.get("file_path")) == target_path for c in citations):
                 references.append(FileReferenceItem(
                     session_id=row["session_id"],
                     session_name=row["session_name"],

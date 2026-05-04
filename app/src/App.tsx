@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   AtSign,
@@ -808,6 +808,16 @@ function MessageList({
   onActivateMessage: (message: ChatMessage) => void;
   onCitationHover: (index?: number) => void;
 }) {
+  const listRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!activeMessageId) return;
+    const activeNode = Array.from(
+      listRef.current?.querySelectorAll<HTMLElement>('[data-message-id]') ?? [],
+    ).find((node) => node.dataset.messageId === activeMessageId);
+    activeNode?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [activeMessageId, messages]);
+
   if (booting) {
     return (
       <div className="empty-state">
@@ -839,10 +849,11 @@ function MessageList({
   }
 
   return (
-    <div className="message-list" aria-live="polite">
+    <div className="message-list" aria-live="polite" ref={listRef}>
       {messages.map((message) => (
         <article
           className={`message message--${message.role} ${activeMessageId === message.id ? 'message--active' : ''}`}
+          data-message-id={message.id}
           key={message.id}
           onClick={() => onActivateMessage(message)}
         >
@@ -1273,34 +1284,36 @@ function FileReferencesView({
             const preview = ref.content.length > 120 ? ref.content.slice(0, 120) + '...' : ref.content;
             return (
               <article className="source-card" key={refKey}>
-                <button
-                  className="source-card__summary"
-                  type="button"
-                  aria-expanded={isExpanded}
-                  onClick={() => toggleRef(refKey)}
-                >
-                  <div className="source-card__top">
-                    <span className="source-index">
-                      {ref.role === 'assistant' ? <Bot size={13} /> : <UserRound size={13} />}
-                    </span>
-                    <span className="source-card__meta">
-                      <span>{ref.createdAt}</span>
-                      {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-                    </span>
-                  </div>
-                  <span className="source-card__path file-ref-preview">{preview}</span>
-                </button>
+                <div className="file-ref-card__summary">
+                  <button
+                    className="file-ref-card__toggle"
+                    type="button"
+                    aria-expanded={isExpanded}
+                    onClick={() => toggleRef(refKey)}
+                  >
+                    <div className="source-card__top">
+                      <span className="source-index">
+                        {ref.role === 'assistant' ? <Bot size={13} /> : <UserRound size={13} />}
+                      </span>
+                      <span className="source-card__meta">
+                        <span>{ref.createdAt}</span>
+                        {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                      </span>
+                    </div>
+                    <span className="source-card__path file-ref-preview">{preview}</span>
+                  </button>
+                  <button
+                    className="source-card__open file-ref-card__open"
+                    type="button"
+                    onClick={() => onNavigate(ref)}
+                  >
+                    <MessageSquare size={14} />
+                    跳转到会话
+                  </button>
+                </div>
                 {isExpanded && (
                   <div className="source-card__detail">
                     <p className="file-ref-content">{ref.content}</p>
-                    <button
-                      className="source-card__open"
-                      type="button"
-                      onClick={() => onNavigate(ref)}
-                    >
-                      <MessageSquare size={14} />
-                      跳转到会话
-                    </button>
                   </div>
                 )}
               </article>
@@ -1461,6 +1474,7 @@ export function App() {
   const [fileRefs, setFileRefs] = useState<FileReference[]>([]);
   const [fileRefsLoading, setFileRefsLoading] = useState(false);
   const [fileRefsError, setFileRefsError] = useState<string>();
+  const pendingNavigationMessageId = useRef<string>();
 
   const activeFile = useMemo(
     () => (activeFileId ? findNode(files, activeFileId) : undefined),
@@ -1522,6 +1536,7 @@ export function App() {
   const loadMessagesForSession = async (sessionId: string) => {
     const remoteMessages = await listMessages(sessionId);
     setMessages(remoteMessages);
+    return remoteMessages;
   };
 
   const loadFileContent = async (node: FileNode) => {
@@ -1598,12 +1613,21 @@ export function App() {
   }, [activeFile?.id]);
 
   useEffect(() => {
-    if (mode === 'qa') {
-      const latestAssistant = [...messages].reverse().find((message) => message.role === 'assistant');
-      const latestMessage = latestAssistant ?? messages[messages.length - 1];
-      if (latestMessage && !messages.some((message) => message.id === activeMessageId)) {
-        setActiveMessageId(latestMessage.id);
+    if (mode !== 'qa') return;
+
+    const pendingMessageId = pendingNavigationMessageId.current;
+    if (pendingMessageId) {
+      if (messages.some((message) => message.id === pendingMessageId)) {
+        setActiveMessageId(pendingMessageId);
+        pendingNavigationMessageId.current = undefined;
       }
+      return;
+    }
+
+    const latestAssistant = [...messages].reverse().find((message) => message.role === 'assistant');
+    const latestMessage = latestAssistant ?? messages[messages.length - 1];
+    if (latestMessage && !messages.some((message) => message.id === activeMessageId)) {
+      setActiveMessageId(latestMessage.id);
     }
   }, [mode, messages, activeMessageId]);
 
@@ -1668,10 +1692,34 @@ export function App() {
     };
   }, [mode, activeFile?.path, activeFile?.type]);
 
-  const handleNavigateToFileReference = (ref: FileReference) => {
+  const handleSelectSession = (sessionId: string) => {
+    pendingNavigationMessageId.current = undefined;
+    setActiveCitationIndex(undefined);
+    setActiveSessionId(sessionId);
+  };
+
+  const handleNavigateToFileReference = async (ref: FileReference) => {
+    pendingNavigationMessageId.current = ref.messageId;
+    setError(undefined);
     setActiveSessionId(ref.sessionId);
     setActiveMessageId(ref.messageId);
+    setActiveCitationIndex(undefined);
     setMode('qa');
+    try {
+      const remoteMessages = await loadMessagesForSession(ref.sessionId);
+      if (remoteMessages.some((message) => message.id === ref.messageId)) {
+        setActiveMessageId(ref.messageId);
+      } else {
+        pendingNavigationMessageId.current = undefined;
+        const latestAssistant = [...remoteMessages].reverse().find((message) => message.role === 'assistant');
+        const fallbackMessage = latestAssistant ?? remoteMessages[remoteMessages.length - 1];
+        setActiveMessageId(fallbackMessage?.id);
+        setError('已打开引用会话，但没有找到对应消息');
+      }
+    } catch (caught) {
+      pendingNavigationMessageId.current = undefined;
+      setError(caught instanceof Error ? caught.message : '会话跳转失败');
+    }
   };
   const handleCreateSession = async () => {
     setCreating(true);
@@ -2030,7 +2078,7 @@ export function App() {
           onInsertEntity={handleInsertEntity}
           onSlashCommand={handleSlashCommand}
           onAskExample={submitQuestion}
-          onSelectSession={setActiveSessionId}
+          onSelectSession={handleSelectSession}
           onCreateSession={handleCreateSession}
           onDeleteSession={handleDeleteSession}
           onInputChange={setInput}

@@ -1286,6 +1286,33 @@ button:disabled {
   line-height: 1.4;
 }
 
+.file-ref-card__summary {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+
+.file-ref-card__toggle {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+
+.file-ref-card__toggle:hover .source-card__path {
+  color: var(--accent);
+}
+
+.file-ref-card__open {
+  justify-self: end;
+}
+
 .file-ref-content {
   white-space: pre-wrap;
   word-break: break-word;

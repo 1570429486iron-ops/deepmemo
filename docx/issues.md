@@ -68,24 +68,30 @@
 
 ## 5. 编辑器模式 Source Panel 显示 "Not Found"
 
-**现状**: 编辑器模式下打开文件，右侧 Source Panel 显示 "Not Found"，但该文件曾在 QA 对话中被引用过。
+**现状**: 编辑器模式下打开文件，右侧 Source Panel 曾显示 "Not Found"，但该文件曾在 QA 对话中被引用过。
 
 **可能原因**:
 1. 当前编辑的文件从未在任何会话中被引用
 2. 文件路径不匹配：前端传 `path=diary/423.md`，但数据库中 `citations` 存的是 `diary/423.md`
 3. 前端 UI 判断逻辑问题（`fileRefs.length === 0` 时显示 "Not Found"）
 
-**待确认**:
-- [ ] 确认当前编辑的文件是否真的在 QA 中被引用过
-- [ ] 打开浏览器 DevTools → Network 查看 `/api/chat/file-references` 的请求参数和响应
-- [ ] 检查 `fileRefs.length === 0` 时的错误提示是否应该改为"暂无会话引用"
+**排查结论**:
+- ✅ 数据库中存在 `diary/423.md` 的 citation，数据不是空的。
+- ✅ 根因一：Vite 代理缺少 `/api/chat/file-references` 专用规则，请求落到通用 `/api` 规则后被 rewrite 成 `/chat/file-references`，后端返回 404 `Not Found`。
+- ✅ 根因二：后端 file reference 查询使用严格字符串比较，缺少 `data/`、前导 `/`、绝对路径等路径变体归一化。
+
+**解决方案**:
+- 在 `app/vite.config.ts` 增加 `/api/chat/file-references` 专用代理规则。
+- 在 `src/app/main.py` 中对请求路径和 citation `file_path` 做 data-relative POSIX 归一化后再比较。
+- 在 `app/src/App.tsx` 中修复 Source Panel 引用跳转：点击后切到问答模式、加载对应会话、选中并滚动到对应消息。
+- 将“跳转到会话”按钮移动到每条引用卡片未展开状态的默认可见区域，减少点击成本。
 
 **涉及位置**:
 - `app/src/App.tsx` - 1693-1717 行 `useEffect` 获取 file references
 - `app/src/App.tsx` - 1288-1294 行空状态展示
 
 **决策人**: gzy
-**状态**: 待排查
+**状态**: 已解决（2026-05-04）
 
 ## 6. 流式返回功能丢失
 
