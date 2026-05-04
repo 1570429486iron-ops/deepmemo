@@ -4,10 +4,23 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 import sqlite3
+import re
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DATABASE_PATH = REPO_ROOT / "data.db"
 DATA_DIR = REPO_ROOT / "data"
+
+def natural_name_key(path: Path):
+    """Sort date-like numeric names newest first, with hidden entries after visible entries."""
+    name = path.name.lower()
+    stem = path.stem
+    if name.startswith("."):
+        return (2, 0, name)
+    if stem.isdigit():
+        return (0, -int(stem), name)
+    parts = re.split(r"(\d+)", name)
+    natural_parts = tuple((0, int(part)) if part.isdigit() else (1, part) for part in parts)
+    return (1, 0, natural_parts)
 
 def get_db_connection():
     conn = sqlite3.connect(DATABASE_PATH)
@@ -97,13 +110,42 @@ def move_file(old_path: str, new_path: str) -> dict:
         "sync_status": "synced"
     }
 
+def create_file(file_path: str, content: str = "") -> dict:
+    """创建新文件"""
+    full_path = DATA_DIR / file_path
+    if full_path.exists():
+        raise FileExistsError(f"File already exists: {file_path}")
+    full_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(full_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    file_hash = compute_file_hash(full_path)
+    upsert_file_meta(file_path, file_hash, "synced")
+    return {
+        "file_path": file_path,
+        "file_hash": file_hash,
+        "sync_status": "synced"
+    }
+
+
+def create_directory(dir_path: str) -> dict:
+    """创建新目录"""
+    full_path = DATA_DIR / dir_path
+    if full_path.exists():
+        raise FileExistsError(f"Directory already exists: {dir_path}")
+    full_path.mkdir(parents=True, exist_ok=True)
+    return {
+        "dir_path": dir_path,
+        "sync_status": "synced"
+    }
+
+
 def scan_directory_tree(base_path: str = "") -> list:
     """递归扫描 data/ 目录，返回嵌套 JSON"""
     scan_path = DATA_DIR / base_path if base_path else DATA_DIR
     result = []
     if not scan_path.exists():
         return result
-    for item in sorted(scan_path.iterdir()):
+    for item in sorted(scan_path.iterdir(), key=natural_name_key):
         rel_path = str(item.relative_to(DATA_DIR))
         meta = get_file_meta(rel_path)
         sync_status = meta["sync_status"] if meta else "synced"

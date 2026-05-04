@@ -8,6 +8,8 @@ from src.app.core.fs_manager import (
     move_file,
     scan_directory_tree,
     update_sync_status,
+    create_file,
+    create_directory,
 )
 
 router = APIRouter(prefix="/api/fs", tags=["filesystem"])
@@ -26,6 +28,15 @@ class MoveRequest(BaseModel):
 class SyncStatusRequest(BaseModel):
     path: str
     sync_status: str
+
+
+class CreateFileRequest(BaseModel):
+    path: str
+    content: str = ""
+
+
+class CreateDirRequest(BaseModel):
+    path: str
 
 
 @router.get("/tree")
@@ -71,5 +82,29 @@ def patch_sync_status(data: SyncStatusRequest):
     try:
         update_sync_status(data.path, data.sync_status)
         return {"message": "Sync status updated", "path": data.path, "sync_status": data.sync_status}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/create-file")
+def create_file_api(data: CreateFileRequest):
+    """创建新文件"""
+    try:
+        result = create_file(data.path, data.content)
+        return {"message": "File created successfully", **result}
+    except FileExistsError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/create-directory")
+def create_directory_api(data: CreateDirRequest):
+    """创建新目录"""
+    try:
+        result = create_directory(data.path)
+        return {"message": "Directory created successfully", **result}
+    except FileExistsError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
