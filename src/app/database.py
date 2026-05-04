@@ -1,17 +1,19 @@
 import sqlite3
 from pathlib import Path
-from datetime import datetime
 
 DATABASE_PATH = Path(__file__).parent.parent.parent / "data.db"
+
 
 def get_db_connection():
     conn = sqlite3.connect(DATABASE_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
+
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS session (
             session_id TEXT PRIMARY KEY,
@@ -21,17 +23,19 @@ def init_db():
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS message (
             message_id TEXT PRIMARY KEY,
             session_id TEXT NOT NULL,
             role TEXT NOT NULL CHECK (role IN ('user', 'ai')),
             content TEXT NOT NULL,
+            citations TEXT DEFAULT '[]',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (session_id) REFERENCES session(session_id)
         )
     """)
-    # file_meta: 记录物理文件在知识库中的状态
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS file_meta (
             id TEXT PRIMARY KEY,
@@ -44,5 +48,6 @@ def init_db():
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
     conn.commit()
     conn.close()
