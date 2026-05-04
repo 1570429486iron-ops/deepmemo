@@ -1,10 +1,25 @@
+import hashlib
 import threading
 from pathlib import Path
 from datetime import datetime
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-DATA_DIR = Path(__file__).parent.parent.parent.parent / "data"
+DATA_DIR = Path(__file__).resolve().parents[2].parent / "data"
+
+def calculate_hash(file_path: Path) -> str:
+    """计算文件的 MD5 hash"""
+    if not file_path.exists():
+        return ""
+    with open(file_path, "rb") as f:
+        return hashlib.md5(f.read()).hexdigest()
+
+def get_db_connection():
+    import sqlite3
+    DATABASE_PATH = Path(__file__).resolve().parents[2].parent / "data.db"
+    conn = sqlite3.connect(DATABASE_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 class KnowledgeBaseHandler(FileSystemEventHandler):
     def __init__(self, on_change_callback=None):
@@ -24,10 +39,32 @@ class KnowledgeBaseHandler(FileSystemEventHandler):
             self._handle_change(event.src_path, "deleted")
 
     def _handle_change(self, src_path: str, event_type: str):
-        rel_path = str(Path(src_path).relative_to(DATA_DIR))
-        print(f"[Watcher] {event_type}: {rel_path}")
-        if self.on_change_callback:
-            self.on_change_callback(rel_path, event_type)
+        full_path = Path(src_path)
+        rel_path = str(full_path.relative_to(DATA_DIR))
+
+        # 计算新 hash
+        new_hash = calculate_hash(full_path)
+
+        # 查询 DB，如果 Hash 不同，标记为 dirty
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        row = cursor.execute(
+            "SELECT file_hash, sync_status FROM file_meta WHERE file_path = ?",
+            (rel_path,)
+        ).fetchone()
+
+        if row:
+            if row["file_hash"] != new_hash:
+                now = datetime.now().isoformat()
+                cursor.execute(
+                    "UPDATE file_meta SET file_hash = ?, sync_status = 'dirty', last_modified = ? WHERE file_path = ?",
+                    (new_hash, now, rel_path)
+                )
+                conn.commit()
+                print(f"[Watcher] {event_type}: {rel_path} -> dirty (hash changed)")
+                if self.on_change_callback:
+                    self.on_change_callback(rel_path, "dirty")
+        conn.close()
 
 class WatcherService:
     def __init__(self, on_change_callback=None):
