@@ -81,12 +81,6 @@ type ParsedMarkdown = {
   sources: SourceChunk[];
 };
 
-type ContextMenuState = {
-  x: number;
-  y: number;
-  node: FileNode;
-};
-
 function trimTrailingBlankLines(lines: string[]): string[] {
   const next = [...lines];
   while (next.length > 0 && next[next.length - 1].trim() === '') {
@@ -321,14 +315,11 @@ function DataExplorer({
   activeFileId,
   searchQuery,
   expanded,
-  contextMenu,
   contextPaths,
   refreshing,
   onSearchChange,
   onSelectFile,
   onToggleFolder,
-  onOpenContextMenu,
-  onCloseContextMenu,
   onUseAsContext,
   onRenameNode,
   onCreateFile,
@@ -339,14 +330,11 @@ function DataExplorer({
   activeFileId?: string;
   searchQuery: string;
   expanded: Set<string>;
-  contextMenu?: ContextMenuState;
   contextPaths: string[];
   refreshing: boolean;
   onSearchChange: (value: string) => void;
   onSelectFile: (id: string) => void;
   onToggleFolder: (id: string) => void;
-  onOpenContextMenu: (menu: ContextMenuState) => void;
-  onCloseContextMenu: () => void;
   onUseAsContext: (node: FileNode) => void;
   onRenameNode: (node: FileNode) => void;
   onCreateFile: () => void;
@@ -357,7 +345,7 @@ function DataExplorer({
   const visibleFiles = useMemo(() => filterTree(files, searchQuery), [files, searchQuery]);
 
   return (
-    <aside className="data-explorer" onClick={onCloseContextMenu}>
+    <aside className="data-explorer">
       <div className="data-explorer__header">
         <div className="brand">
           <div className="brand__mark">D</div>
@@ -403,38 +391,12 @@ function DataExplorer({
             contextPaths={contextPaths}
             onSelectFile={onSelectFile}
             onToggleFolder={onToggleFolder}
-            onOpenContextMenu={onOpenContextMenu}
             onUseAsContext={onUseAsContext}
             onRenameNode={onRenameNode}
             onCreateFile={onCreateFile}
           />
         ))}
       </nav>
-
-      {contextMenu && (
-        <div
-          className="context-menu"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
-          onClick={(event) => event.stopPropagation()}
-        >
-          <button type="button">
-            <Code2 size={14} />
-            在终端打开
-          </button>
-          <button type="button" onClick={() => onUseAsContext(contextMenu.node)}>
-            <Bot size={14} />
-            以此为 AI 上下文
-          </button>
-          <button type="button" onClick={() => onRenameNode(contextMenu.node)}>
-            <FileText size={14} />
-            重命名
-          </button>
-          <button type="button" className="context-menu__danger">
-            <Trash2 size={14} />
-            删除
-          </button>
-        </div>
-      )}
 
       <div className="data-explorer__footer">
         <div className="storage-card">
@@ -466,7 +428,6 @@ function FileTreeNode({
   contextPaths,
   onSelectFile,
   onToggleFolder,
-  onOpenContextMenu,
   onUseAsContext,
   onRenameNode,
   onCreateFile,
@@ -478,7 +439,6 @@ function FileTreeNode({
   contextPaths: string[];
   onSelectFile: (id: string) => void;
   onToggleFolder: (id: string) => void;
-  onOpenContextMenu: (menu: ContextMenuState) => void;
   onUseAsContext: (node: FileNode) => void;
   onRenameNode: (node: FileNode) => void;
   onCreateFile: (parentPath: string) => void;
@@ -496,11 +456,6 @@ function FileTreeNode({
     }
   };
 
-  const handleContextMenu = (event: React.MouseEvent<HTMLButtonElement>) => {
-    event.preventDefault();
-    onOpenContextMenu({ x: event.clientX, y: event.clientY, node });
-  };
-
   return (
     <div className="file-node">
       <button
@@ -508,7 +463,6 @@ function FileTreeNode({
         type="button"
         style={{ paddingLeft: 10 + level * 16 }}
         onClick={handleClick}
-        onContextMenu={handleContextMenu}
         title={node.path}
       >
         <span className="file-node__chevron">
@@ -551,7 +505,6 @@ function FileTreeNode({
               contextPaths={contextPaths}
               onSelectFile={onSelectFile}
               onToggleFolder={onToggleFolder}
-              onOpenContextMenu={onOpenContextMenu}
               onUseAsContext={onUseAsContext}
               onRenameNode={onRenameNode}
               onCreateFile={onCreateFile}
@@ -1498,7 +1451,6 @@ export function App() {
   const [mode, setMode] = useState<WorkspaceMode>('editor');
   const [fileContents, setFileContents] = useState<Record<string, string>>({});
   const [contextPaths, setContextPaths] = useState<string[]>(['diary', 'ideas']);
-  const [contextMenu, setContextMenu] = useState<ContextMenuState>();
   const [drafting, setDrafting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [activeMessageId, setActiveMessageId] = useState<string>();
@@ -1835,7 +1787,6 @@ export function App() {
       if (current.includes(node.path)) return current;
       return [...current.slice(-2), node.path];
     });
-    setContextMenu(undefined);
   };
 
   const handleActivateMessage = (message: ChatMessage) => {
@@ -1903,7 +1854,6 @@ export function App() {
   };
 
   const handleRenameNode = async (node: FileNode) => {
-    setContextMenu(undefined);
     if (node.type !== 'file') {
       setError('当前后端 move 接口仅用于文件重命名');
       return;
@@ -2029,14 +1979,11 @@ export function App() {
         activeFileId={activeFileId}
         searchQuery={searchQuery}
         expanded={expanded}
-        contextMenu={contextMenu}
         contextPaths={contextPaths}
         refreshing={refreshing}
         onSearchChange={setSearchQuery}
         onSelectFile={handleSelectFile}
         onToggleFolder={handleToggleFolder}
-        onOpenContextMenu={setContextMenu}
-        onCloseContextMenu={() => setContextMenu(undefined)}
         onUseAsContext={handleUseAsContext}
         onRenameNode={handleRenameNode}
         onCreateFile={handleCreateFile}
