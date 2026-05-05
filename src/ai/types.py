@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -107,6 +108,14 @@ class WebSearchResult:
 @dataclass
 class KnowledgeAnswer:
     content: str
+    route: RouteDecision
+    local_result: LocalSearchResult
+    web_result: WebSearchResult | None = None
+
+
+@dataclass
+class KnowledgeAnswerStream:
+    chunks: Iterator[str]
     route: RouteDecision
     local_result: LocalSearchResult
     web_result: WebSearchResult | None = None

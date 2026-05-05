@@ -27,7 +27,20 @@ class LLMService:
             temperature=self.temperature,
             stream=stream,
         )
+        if stream:
+            return self._iter_stream_content(response)
         return response
+
+    def _iter_stream_content(self, response):
+        for chunk in response:
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+
+            delta = getattr(choices[0], "delta", None)
+            content = getattr(delta, "content", None)
+            if content:
+                yield content
 
 
 llm_service = LLMService()

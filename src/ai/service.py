@@ -1,7 +1,7 @@
 from src.ai.answer_composer import AnswerComposer
 from src.ai.local_search_agent import LocalSearchAgent
 from src.ai.query_router import QueryRouter
-from src.ai.types import KnowledgeAnswer
+from src.ai.types import KnowledgeAnswer, KnowledgeAnswerStream
 from src.ai.web_search_agent import WebSearchAgent
 from src.services.llm_service import llm_service
 
@@ -37,6 +37,28 @@ class KnowledgeQAService:
         )
         return KnowledgeAnswer(
             content=content,
+            route=route,
+            local_result=local_result,
+            web_result=web_result,
+        )
+
+    def answer_stream(self, question: str, *, history: list[dict] | None = None) -> KnowledgeAnswerStream:
+        route = self.router.route(question)
+        local_result = self.local_search_agent.search(question, route=route)
+
+        web_result = None
+        if route.needs_web and not local_result.high_confidence:
+            web_result = self.web_search_agent.search(question)
+
+        chunks = self.answer_composer.compose_stream(
+            question,
+            local_result,
+            route,
+            history=history,
+            web_result=web_result,
+        )
+        return KnowledgeAnswerStream(
+            chunks=chunks,
             route=route,
             local_result=local_result,
             web_result=web_result,

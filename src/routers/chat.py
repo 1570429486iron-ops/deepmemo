@@ -2,6 +2,7 @@ import json
 import uuid
 from datetime import datetime
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from src.ai.service import knowledge_qa_service
 from src.app.database import get_db_connection
@@ -43,6 +44,10 @@ def build_message_citations(answer) -> list[dict]:
         }
         for index, item in enumerate(answer.local_result.evidence, start=1)
     ]
+
+
+def format_sse_event(payload: dict) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 def update_session_message_ids(session_id: str, message_ids: list[str]):
@@ -97,6 +102,53 @@ def chat(request: ChatRequest):
         role="ai",
         content=ai_content,
         created_at=datetime.now(),
+    )
+
+
+@router.post("/stream")
+async def chat_stream(request: ChatRequest):
+    """SSE 流式聊天端点"""
+    session = get_session_row(request.session_id)
+    message_ids = json.loads(session["message_ids"])
+    llm_messages = build_llm_messages(request.session_id)
+
+    user_msg_id = str(uuid.uuid4())
+    save_message(user_msg_id, request.session_id, "user", request.user_message)
+    message_ids.append(user_msg_id)
+    update_session_message_ids(request.session_id, message_ids)
+
+    async def event_generator():
+        full_content = ""
+        try:
+            answer = knowledge_qa_service.answer_stream(request.user_message, history=llm_messages)
+            for chunk in answer.chunks:
+                full_content += chunk
+                yield format_sse_event({"type": "token", "content": chunk})
+
+            ai_msg_id = str(uuid.uuid4())
+            saved_message = save_message(
+                ai_msg_id,
+                request.session_id,
+                "ai",
+                full_content,
+                build_message_citations(answer),
+            )
+            message_ids.append(ai_msg_id)
+            update_session_message_ids(request.session_id, message_ids)
+            yield format_sse_event({"type": "done", "message": saved_message})
+        except Exception as exc:
+            if full_content:
+                ai_msg_id = str(uuid.uuid4())
+                saved_message = save_message(ai_msg_id, request.session_id, "ai", full_content)
+                message_ids.append(ai_msg_id)
+                update_session_message_ids(request.session_id, message_ids)
+                yield format_sse_event({"type": "done", "message": saved_message})
+            yield format_sse_event({"type": "error", "content": str(exc)})
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

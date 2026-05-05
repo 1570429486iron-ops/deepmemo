@@ -13,6 +13,7 @@ from src.routers.fs import router as fs_router
 from src.routers.diary import router as diary_router
 from src.routers.pulse import router as pulse_router
 from src.routers.citations import router as citations_router
+from src.routers.chat import router as chat_router
 
 
 app = FastAPI(title="DeepMemo API", version="0.2.0")
@@ -136,6 +137,7 @@ app.include_router(fs_router)
 app.include_router(diary_router)
 app.include_router(pulse_router)
 app.include_router(citations_router)
+app.include_router(chat_router)
 
 
 # --- Session APIs ---
@@ -199,55 +201,6 @@ def delete_session(session_id: str):
     conn.commit()
     conn.close()
     return {"message": "Session deleted"}
-
-
-# --- Chat APIs ---
-@app.post("/chat", response_model=MessageResponse)
-def chat(request: ChatRequest):
-    session = get_session_row(request.session_id)
-    message_ids = json.loads(session["message_ids"])
-    llm_messages = build_llm_messages(request.session_id)
-
-    user_msg_id = str(uuid.uuid4())
-    save_message(user_msg_id, request.session_id, "user", request.user_message)
-    message_ids.append(user_msg_id)
-
-    answer = knowledge_qa_service.answer(request.user_message, history=llm_messages)
-    ai_content = answer.content
-    citations = build_message_citations(answer)
-
-    ai_msg_id = str(uuid.uuid4())
-    save_message(ai_msg_id, request.session_id, "ai", ai_content, citations)
-    message_ids.append(ai_msg_id)
-
-    update_session_message_ids(request.session_id, message_ids)
-
-    return MessageResponse(
-        message_id=ai_msg_id,
-        session_id=request.session_id,
-        role="ai",
-        content=ai_content,
-        created_at=datetime.now(),
-    )
-
-
-@app.get("/chat/{session_id}/messages", response_model=list[MessageResponse])
-def get_messages(session_id: str):
-    get_session_row(session_id)
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    rows = cursor.execute("SELECT * FROM message WHERE session_id = ? ORDER BY created_at", (session_id,)).fetchall()
-    conn.close()
-    return [
-        MessageResponse(
-            message_id=row["message_id"],
-            session_id=row["session_id"],
-            role=row["role"],
-            content=row["content"],
-            created_at=datetime.fromisoformat(row["created_at"]),
-        )
-        for row in rows
-    ]
 
 
 # --- Chat File References ---

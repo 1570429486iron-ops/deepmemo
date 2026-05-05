@@ -56,6 +56,114 @@ class AnswerComposer:
         except Exception as exc:
             return self._compose_fallback(local_result, exc)
 
+    def compose_stream(
+        self,
+        question: str,
+        local_result: LocalSearchResult,
+        route: RouteDecision,
+        *,
+        history: list[dict] | None = None,
+        web_result: WebSearchResult | None = None,
+    ):
+        if not local_result.has_evidence:
+            if web_result and web_result.snippets:
+                for chunk in self._compose_web_only_stream(question, route, web_result, history=history):
+                    yield chunk
+                return
+            yield self._compose_no_evidence(question, route, web_result)
+            return
+
+        external_block = ""
+        if web_result and web_result.snippets:
+            external_block = f"\n\n外部搜索补充：\n{self._format_web(web_result)}"
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是 DeepMemo 的个人知识库问答助手。"
+                    "只能基于给定的本地知识库证据回答；如果证据不足，明确说不足。"
+                    "回答使用中文，结论要简洁。"
+                    "相关句子后必须使用 [1]、[2] 这样的数字引用，数字来自证据编号。"
+                    "不要输出引用列表，系统会自动追加可点击引用块。"
+                    "不要把外部常识包装成用户知识库里的内容。"
+                ),
+            }
+        ]
+        messages.extend(self._normalize_history(history or [])[-8:])
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    f"用户问题：{question}\n\n"
+                    f"路由判断：{route.reason}\n\n"
+                    f"本地知识库证据：\n{self._format_evidence(local_result)}"
+                    f"{external_block}\n\n"
+                    "请基于以上证据回答。必须区分本地知识库证据和外部搜索补充。"
+                ),
+            }
+        )
+
+        emitted = False
+        try:
+            response = self.llm_service.chat(messages, stream=True)
+            for chunk in self._strip_generated_references_stream(response):
+                if chunk:
+                    emitted = True
+                    yield chunk
+            references = self._format_reference_section(local_result)
+            if references:
+                yield "\n\n" + references
+        except Exception as exc:
+            if emitted:
+                return
+            yield self._compose_fallback(local_result, exc)
+            return
+
+    def _compose_web_only_stream(
+        self,
+        question: str,
+        route: RouteDecision,
+        web_result: WebSearchResult,
+        *,
+        history: list[dict] | None = None,
+    ):
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是 DeepMemo 的个人知识库问答助手。"
+                    "当前没有本地知识库证据，只能把外部搜索内容作为补充说明。"
+                    "回答时必须明确标注这些内容不是本地知识库记录。"
+                ),
+            }
+        ]
+        messages.extend(self._normalize_history(history or [])[-8:])
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    f"用户问题：{question}\n\n"
+                    f"路由判断：{route.reason}\n\n"
+                    f"外部搜索补充：\n{self._format_web(web_result)}\n\n"
+                    "请回答，并说明本地知识库没有找到相关证据。"
+                ),
+            }
+        )
+        try:
+            response = self.llm_service.chat(messages, stream=True)
+            for chunk in response:
+                if chunk:
+                    yield chunk
+        except Exception as exc:
+            yield "\n".join(
+                [
+                    "本地知识库没有找到相关证据；外部搜索返回了补充内容，但 LLM 生成失败。",
+                    f"错误：{exc}",
+                    self._format_web(web_result),
+                ]
+            )
+
     def _format_evidence(self, local_result: LocalSearchResult) -> str:
         blocks: list[str] = []
         for index, item in enumerate(local_result.evidence, start=1):
@@ -137,9 +245,8 @@ class AnswerComposer:
             "",
         ]
         for source_index, item in enumerate(local_result.evidence, start=1):
-            first_lines = item.excerpt.splitlines()[:6]
-            lines.append(f"- [{source_index}] {item.path}:{item.start_line}-{item.end_line}")
-            lines.extend(f"  {line}" for line in first_lines)
+            lines.append(f"证据 {source_index}: {item.path}:{item.start_line}-{item.end_line}")
+            lines.append(f"  {item.excerpt.splitlines()[0]}")
         return self._append_references("\n".join(lines), local_result)
 
     def _append_references(self, content: str, local_result: LocalSearchResult) -> str:
@@ -151,13 +258,50 @@ class AnswerComposer:
         return "\n\n".join([answer, references]) if answer else references
 
     def _strip_generated_references(self, content: str) -> str:
-        for marker in ("\n## 引用", "\n### 引用", "\n## 参考", "\n### 参考"):
+        markers = (
+            "\n## 引用",
+            "\n### 引用",
+            "\n## 参考",
+            "\n### 参考",
+            "LLM 生成暂时失败，先返回本地检索到的证据摘要。",
+        )
+        for marker in markers:
             if content.startswith(marker.lstrip()):
                 return ""
             index = content.find(marker)
             if index != -1:
                 return content[:index]
         return content
+
+    def _strip_generated_references_stream(self, chunks):
+        pending = ""
+        markers = ("\n## 引用", "\n### 引用", "\n## 参考", "\n### 参考")
+        start_markers = tuple(marker.lstrip() for marker in markers)
+        keep_tail = max(len(marker) for marker in markers)
+
+        def find_reference_marker(content: str) -> int:
+            if content.startswith(start_markers):
+                return 0
+            indexes = [index for marker in markers if (index := content.find(marker)) != -1]
+            return min(indexes) if indexes else -1
+
+        for chunk in chunks:
+            if not chunk:
+                continue
+            pending += chunk
+            marker_index = find_reference_marker(pending)
+            if marker_index != -1:
+                if marker_index > 0:
+                    yield pending[:marker_index]
+                return
+
+            flush_length = max(0, len(pending) - keep_tail)
+            if flush_length > 0:
+                yield pending[:flush_length]
+                pending = pending[flush_length:]
+
+        if pending:
+            yield pending
 
     def _format_reference_section(self, local_result: LocalSearchResult) -> str:
         blocks = ["## 引用"]
@@ -167,12 +311,14 @@ class AnswerComposer:
 
     def _format_reference_item(self, index: int, item: Evidence) -> str:
         query = item.query.replace("\n", " ").strip()
-        header = f"[{index}] {item.path}:{item.start_line}-{item.end_line} · score={item.score:.2f}"
+        header = f"[{index}] {item.path}:{item.start_line}-{item.end_line}"
         if query:
-            header = f"{header} · query={query}"
+            header = f"{header} (query={query})"
 
-        excerpt_lines = [f"> {line}" for line in item.excerpt.splitlines()]
-        return "\n".join([header, *excerpt_lines])
+        excerpt_lines = item.excerpt.splitlines()[:6]
+        blocks = [header]
+        blocks.extend(f"> {line}" for line in excerpt_lines)
+        return "\n".join(blocks)
 
     def _normalize_history(self, history: list[dict]) -> list[dict]:
         normalized: list[dict] = []

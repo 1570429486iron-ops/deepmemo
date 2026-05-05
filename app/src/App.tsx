@@ -46,6 +46,7 @@ import {
   listSessions,
   moveFile,
   sendMessage,
+  sendMessageStream,
   updateFileSyncStatus,
   writeFile,
 } from './api';
@@ -97,7 +98,7 @@ function parseMarkdownWithSources(content: string): ParsedMarkdown {
   }
 
   const sourceHeaderPattern =
-    /^\[(\d+)\]\s+(.+):(\d+)-(\d+)(?:\s+·\s+score=([0-9.]+))?(?:\s+·\s+query=(.*))?\s*$/;
+    /^\[(\d+)\]\s+(.+):(\d+)-(\d+)(?:\s+·\s+score=([0-9.]+))?(?:(?:\s+·\s+query=(.*))|(?:\s+\(query=(.*)\)))?\s*$/;
   const sources: SourceChunk[] = [];
   let current: SourceChunk | undefined;
 
@@ -122,14 +123,14 @@ function parseMarkdownWithSources(content: string): ParsedMarkdown {
         startLine: Number(match[3]),
         endLine: Number(match[4]),
         score: parsedScore !== undefined && Number.isFinite(parsedScore) ? parsedScore : undefined,
-        query: match[6],
+        query: match[6] ?? match[7],
         excerpt: '',
       };
       continue;
     }
 
-    if (current && line.startsWith('>')) {
-      const excerptLine = line.replace(/^>\s?/, '');
+    if (current && line.trim().startsWith('>')) {
+      const excerptLine = line.trim().replace(/^>\s?/, '');
       current.excerpt = current.excerpt ? `${current.excerpt}\n${excerptLine}` : excerptLine;
     }
   }
@@ -153,7 +154,7 @@ function scoreLevel(score?: number): 'high' | 'medium' | 'low' {
 
 function createOptimisticUserMessage(sessionId: string, content: string): ChatMessage {
   return {
-    id: `local-${Date.now()}`,
+    id: `local-user-${Date.now()}`,
     sessionId,
     role: 'user',
     content,
@@ -749,42 +750,6 @@ function MarkdownLite({
         }
         return <p key={`${line}-${index}`}>{renderInlineText(line, index)}</p>;
       })}
-      {sources.length > 0 && (
-        <section className="reference-section" aria-label="引用">
-          <h2>引用</h2>
-          <div className="reference-list">
-            {sources.map((source) => {
-              const isActive = activeCitationIndex === source.index || activeSourceIndexes.has(source.index);
-              const chunkText = `${source.query ? `query: ${source.query}\n\n` : ''}${source.excerpt}`;
-              return (
-                <article className={`reference-item ${isActive ? 'reference-item--active' : ''}`} key={`${source.index}-${source.path}`}>
-                  <button
-                    className="reference-trigger"
-                    type="button"
-                    onMouseEnter={() => onCitationHover?.(source.index)}
-                    onMouseLeave={() => onCitationHover?.(undefined)}
-                    onClick={() => {
-                      toggleSource(source.index);
-                      onCitationSelect?.(source.index);
-                    }}
-                  >
-                    <span className="source-index">[{source.index}]</span>
-                    <span className="reference-path">
-                      {source.path}:{source.startLine}-{source.endLine}
-                    </span>
-                    {source.score !== undefined && (
-                      <span className={`score score--${scoreLevel(source.score)}`}>
-                        {Math.round(source.score * 100)}%
-                      </span>
-                    )}
-                  </button>
-                  {isActive && <pre className="reference-chunk">{chunkText}</pre>}
-                </article>
-              );
-            })}
-          </div>
-        </section>
-      )}
     </div>
   );
 }
@@ -874,7 +839,7 @@ function MessageList({
           </div>
         </article>
       ))}
-      {loading && (
+      {loading && messages.filter(m => m.role === 'assistant').length === 0 && (
         <article className="message message--assistant">
           <div className="message__meta">DeepMemo · 等待后端回复</div>
           <div className="message__bubble">
@@ -1284,33 +1249,31 @@ function FileReferencesView({
             const preview = ref.content.length > 120 ? ref.content.slice(0, 120) + '...' : ref.content;
             return (
               <article className="source-card" key={refKey}>
-                <div className="file-ref-card__summary">
-                  <button
-                    className="file-ref-card__toggle"
-                    type="button"
-                    aria-expanded={isExpanded}
-                    onClick={() => toggleRef(refKey)}
-                  >
-                    <div className="source-card__top">
-                      <span className="source-index">
-                        {ref.role === 'assistant' ? <Bot size={13} /> : <UserRound size={13} />}
-                      </span>
-                      <span className="source-card__meta">
-                        <span>{ref.createdAt}</span>
-                        {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-                      </span>
-                    </div>
-                    <span className="source-card__path file-ref-preview">{preview}</span>
-                  </button>
-                  <button
-                    className="source-card__open file-ref-card__open"
-                    type="button"
-                    onClick={() => onNavigate(ref)}
-                  >
-                    <MessageSquare size={14} />
-                    跳转到会话
-                  </button>
-                </div>
+                <button
+                  className="file-ref-card__toggle"
+                  type="button"
+                  aria-expanded={isExpanded}
+                  onClick={() => toggleRef(refKey)}
+                >
+                  <div className="source-card__top">
+                    <span className="source-index">
+                      {ref.role === 'assistant' ? <Bot size={13} /> : <UserRound size={13} />}
+                    </span>
+                    <span className="source-card__meta">
+                      <span>{ref.createdAt}</span>
+                      {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                    </span>
+                  </div>
+                  <span className="source-card__path file-ref-preview">{preview}</span>
+                </button>
+                <button
+                  className="source-card__open file-ref-card__open"
+                  type="button"
+                  onClick={() => onNavigate(ref)}
+                >
+                  <MessageSquare size={14} />
+                  跳转到会话
+                </button>
                 {isExpanded && (
                   <div className="source-card__detail">
                     <p className="file-ref-content">{ref.content}</p>
@@ -1430,13 +1393,13 @@ function SourcesView({
                 {source.startLine > 0 ? `Lines ${source.startLine}-${source.endLine}` : source.evidenceId ?? 'fingerprint citation'}
               </span>
             </button>
+            <button className="source-card__open" type="button" onClick={() => onOpenSourceFile(source.path)}>
+              <Link2 size={14} />
+              跳转到源文件
+            </button>
             {isExpanded && (
               <div className="source-card__detail">
                 <p>{source.excerpt}</p>
-                <button className="source-card__open" type="button" onClick={() => onOpenSourceFile(source.path)}>
-                  <Link2 size={14} />
-                  打开来源文件
-                </button>
               </div>
             )}
           </article>
@@ -1786,26 +1749,67 @@ export function App() {
     const trimmed = question.trim();
     if (!trimmed || loading || !activeSessionId) return;
 
-    const optimistic = createOptimisticUserMessage(activeSessionId, trimmed);
+    const sessionId = activeSessionId;
+    const optimisticUser = createOptimisticUserMessage(sessionId, trimmed);
+    const tempAssistantId = `local-assistant-${Date.now()}`;
+    const optimisticAssistant: ChatMessage = {
+      id: tempAssistantId,
+      sessionId,
+      role: 'assistant',
+      content: '',
+      createdAt: new Intl.DateTimeFormat('zh-CN', {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      }).format(new Date()),
+    };
+
     setMode('qa');
     setInput('');
     setLoading(true);
     setError(undefined);
-    setMessages((current) => [...current, optimistic]);
+    setMessages((current) => [...current, optimisticUser, optimisticAssistant]);
 
+    const streamedContent: string[] = [];
     try {
-      const aiMessage = await sendMessage(activeSessionId, trimmed);
-      setMessages((current) => [...current, aiMessage]);
-      await refreshSessionList(activeSessionId);
-      const persistedMessages = await listMessages(activeSessionId);
+      const savedAssistant = await sendMessageStream(sessionId, trimmed, (token) => {
+        streamedContent.push(token);
+        setMessages((current) =>
+          current.map((msg) =>
+            msg.id === tempAssistantId
+              ? { ...msg, content: streamedContent.join('') }
+              : msg
+          )
+        );
+      });
+
+      if (savedAssistant) {
+        setMessages((current) =>
+          current.map((msg) => (msg.id === tempAssistantId ? savedAssistant : msg))
+        );
+        setActiveMessageId(savedAssistant.id);
+      }
+
+      await refreshSessionList(sessionId);
+      const persistedMessages = await listMessages(sessionId);
       setMessages(persistedMessages);
+      const persistedAssistant = savedAssistant
+        ? persistedMessages.find((message) => message.id === savedAssistant.id)
+        : [...persistedMessages].reverse().find((message) => message.role === 'assistant');
+      setActiveMessageId(persistedAssistant?.id);
     } catch (caught) {
       try {
-        const persistedMessages = await listMessages(activeSessionId);
-        setMessages(persistedMessages);
-        await refreshSessionList(activeSessionId);
+        await refreshSessionList(sessionId);
+        const persistedMessages = await listMessages(sessionId);
+        const hasPersistedAssistant = persistedMessages.some((message) => message.role === 'assistant');
+        if (hasPersistedAssistant) {
+          setMessages(persistedMessages);
+        } else if (streamedContent.length === 0) {
+          setMessages((current) => current.filter((message) => message.id !== tempAssistantId));
+        }
       } catch {
-        setMessages((current) => current.filter((message) => message.id !== optimistic.id));
+        // keep current streamed content on refresh failure
       }
       setError(caught instanceof Error ? caught.message : '发送失败');
     } finally {

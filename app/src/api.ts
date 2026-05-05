@@ -137,6 +137,94 @@ export async function sendMessage(sessionId: string, userMessage: string): Promi
   return mapMessage(message);
 }
 
+export async function sendMessageStream(
+  sessionId: string,
+  userMessage: string,
+  onChunk: (token: string) => void
+): Promise<ChatMessage | undefined> {
+  const response = await fetch(buildRequestUrl('/chat/stream'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      session_id: sessionId,
+      user_message: userMessage,
+    }),
+  });
+
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = (await response.json()) as { detail?: string };
+      detail = body.detail ?? detail;
+    } catch {
+      // Keep the HTTP status text when the backend does not return JSON.
+    }
+    throw new Error(detail || `HTTP ${response.status}`);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error('Response body is not readable');
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let savedMessage: ChatMessage | undefined;
+
+  const handleEventBlock = (block: string) => {
+    const data = block
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.replace(/^data:\s?/, ''))
+      .join('\n')
+      .trim();
+
+    if (!data) return;
+
+    const event = JSON.parse(data) as {
+      type?: string;
+      content?: string;
+      message?: ApiMessageResponse;
+    };
+
+    if (event.type === 'token') {
+      onChunk(event.content ?? '');
+      return;
+    }
+
+    if (event.type === 'done') {
+      savedMessage = event.message ? mapMessage(event.message) : undefined;
+      return;
+    }
+
+    if (event.type === 'error') {
+      throw new Error(event.content || '流式生成失败');
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const blocks = buffer.split(/\r?\n\r?\n/);
+    buffer = blocks.pop() ?? '';
+
+    for (const block of blocks) {
+      handleEventBlock(block);
+    }
+  }
+
+  buffer += decoder.decode();
+  if (buffer.trim()) {
+    handleEventBlock(buffer);
+  }
+
+  return savedMessage;
+}
+
 export async function getMessageCitations(messageId: string): Promise<Citation[]> {
   const response = await request<ApiCitationsResponse>(`/api/chat/citations?message_id=${encodeURIComponent(messageId)}`);
   return response.citations.map(mapCitation);
