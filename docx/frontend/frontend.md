@@ -111,3 +111,55 @@
 - 样式可以先用普通 CSS 或 CSS Modules，保持 Vite 默认工程容易启动。
 - 所有按钮先绑定本地 mock 数据，不接真实接口。
 - 页面首屏就是问答工作台，不做 landing page。
+
+---
+
+## 开发记录
+
+### 2026-05-16 前端初始化
+
+**已完成：**
+- 创建 Vite + React + TypeScript 项目
+- 项目路径：`deepmemo/frontend`
+- 依赖安装：react 19, react-dom 19, lucide-react, vite 6
+
+**组件结构：**
+```
+src/
+├── components/
+│   ├── Sidebar.tsx      # 左侧知识库导航栏
+│   ├── TopBar.tsx       # 顶部工具条
+│   ├── ChatPanel.tsx    # 问答应主区域
+│   ├── Composer.tsx     # 底部输入区
+│   ├── SourcesPanel.tsx # 右侧来源面板
+│   └── index.ts
+├── types/
+│   └── index.ts         # TypeScript 类型定义
+├── data/
+│   └── mockData.ts       # Mock 数据和响应逻辑
+├── styles/
+│   ├── global.css       # 全局样式和 CSS 变量
+│   ├── Sidebar.css
+│   ├── TopBar.css
+│   ├── ChatPanel.css
+│   ├── Composer.css
+│   └── SourcesPanel.css
+├── App.tsx              # 主应用组件
+└── main.tsx             # 入口文件
+```
+
+**启动命令：**
+```bash
+cd deepmemo/frontend
+npm run dev
+```
+
+**Mock 交互实现：**
+- 包含"部署"关键词 → 返回部署相关回答
+- 包含"权限"关键词 → 返回权限相关回答
+- 其他问题 → 返回通用知识库回答
+
+**待办：**
+- [ ] 响应式布局适配
+- [ ] 真实 API 接口对接
+
